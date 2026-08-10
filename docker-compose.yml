@@ -1,0 +1,10 @@
+services:
+  dashboard:
+    build: .
+    container_name: dev-flow-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:4310:8000"
+
