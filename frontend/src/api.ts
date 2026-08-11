@@ -1,5 +1,7 @@
 import type { PullRequestInput } from "./graphModel";
 
+const API_BASE = "/dev_dashboard/api";
+
 export type CommitRecord = {
   sha: string;
   message: string;
@@ -30,11 +32,10 @@ async function json<T>(url: string): Promise<T> {
 }
 
 export async function loadRepositories(): Promise<string[]> {
-  return (await json<{ repositories: string[] }>("/api/repositories")).repositories;
+  return (await json<{ repositories: string[] }>(`${API_BASE}/repositories`)).repositories;
 }
 
 export async function loadSnapshot(repo: string, force = false): Promise<Snapshot> {
   const params = new URLSearchParams({ repo, force: String(force) });
-  return json<Snapshot>(`/api/snapshot?${params}`);
+  return json<Snapshot>(`${API_BASE}/snapshot?${params}`);
 }
-
