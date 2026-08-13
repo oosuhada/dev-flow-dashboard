@@ -45,6 +45,28 @@ async def snapshot(repo: str = Query(...), force: bool = Query(False)) -> dict[s
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/commit")
+@app.get(f"{DASHBOARD_PREFIX}/api/commit")
+async def commit(repo: str = Query(...), sha: str = Query(...)) -> dict[str, object]:
+    try:
+        return await aggregator.commit_detail(repo, sha)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/file")
+@app.get(f"{DASHBOARD_PREFIX}/api/file")
+async def file_content(repo: str = Query(...), sha: str = Query(...), path: str = Query(...)) -> dict[str, object]:
+    try:
+        return await aggregator.file_content(repo, sha, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 ASSETS = DIST / "assets"
 if ASSETS.exists():

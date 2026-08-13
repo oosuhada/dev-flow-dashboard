@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -94,11 +96,19 @@ class GitHubAggregator:
         rate_limits: list[int] = []
 
         async with httpx.AsyncClient(timeout=20.0) as client:
-            pull_list, remaining, limit = await self._get(client, f"{root}/pulls?state=open&per_page=100&sort=updated&direction=desc")
-            if remaining is not None:
-                rate_values.append(remaining)
-            if limit is not None:
-                rate_limits.append(limit)
+            initial = await asyncio.gather(
+                self._get(client, root),
+                self._get(client, f"{root}/pulls?state=open&per_page=100&sort=updated&direction=desc"),
+                self._get(client, f"{root}/branches?per_page=100"),
+                self._get(client, f"{root}/tags?per_page=100"),
+            )
+            for _, remaining, limit in initial:
+                if remaining is not None:
+                    rate_values.append(remaining)
+                if limit is not None:
+                    rate_limits.append(limit)
+            repo_meta, pull_list, branches_raw, tags_raw = (result[0] for result in initial)
+            default_branch = str(repo_meta.get("default_branch") or "main")
 
             async def enrich(summary: dict[str, Any]) -> dict[str, Any]:
                 number = summary["number"]
@@ -118,7 +128,7 @@ class GitHubAggregator:
                 return normalize_pull(detail, reviews, checks.get("check_runs", []), commits)
 
             pulls = await asyncio.gather(*(enrich(item) for item in pull_list))
-            main_commits_raw, rem, lim = await self._get(client, f"{root}/commits?sha=main&per_page=40")
+            main_commits_raw, rem, lim = await self._get(client, f"{root}/commits?sha={quote(default_branch, safe='')}&per_page=100")
             if rem is not None:
                 rate_values.append(rem)
             if lim is not None:
@@ -126,16 +136,47 @@ class GitHubAggregator:
 
         commits_by_sha: dict[str, dict[str, Any]] = {}
         for item in main_commits_raw:
-            commits_by_sha[item["sha"]] = normalize_commit(item, "main")
+            commits_by_sha[item["sha"]] = normalize_commit(item, default_branch)
         for pull in pulls:
             for item in pull.pop("_commits"):
                 normalized = normalize_commit(item, pull["head"], pull["number"])
                 commits_by_sha.setdefault(normalized["sha"], normalized)
 
+        refs: list[dict[str, str]] = []
+        for branch in branches_raw:
+            sha = ((branch.get("commit") or {}).get("sha") or "").strip()
+            name = str(branch.get("name") or "").strip()
+            if sha and name:
+                refs.append({"sha": sha, "name": name, "type": "head"})
+        for tag in tags_raw:
+            sha = ((tag.get("commit") or {}).get("sha") or "").strip()
+            name = str(tag.get("name") or "").strip()
+            if sha and name:
+                refs.append({"sha": sha, "name": name, "type": "tag"})
+        known_refs = {(ref["sha"], ref["name"], ref["type"]) for ref in refs}
+        for pull in pulls:
+            key = (pull["headSha"], pull["head"], "remote")
+            if pull["headSha"] and pull["head"] and key not in known_refs:
+                refs.append({"sha": pull["headSha"], "name": pull["head"], "type": "remote"})
+                known_refs.add(key)
+        refs_by_sha: dict[str, list[dict[str, str]]] = {}
+        for ref in refs:
+            refs_by_sha.setdefault(ref["sha"], []).append({"name": ref["name"], "type": ref["type"]})
+        for sha, commit in commits_by_sha.items():
+            commit["refs"] = refs_by_sha.get(sha, [])
+
+        ordered_commits = topological_date_order(commits_by_sha)[:100]
+        head_sha = next(
+            (((branch.get("commit") or {}).get("sha") or "") for branch in branches_raw if branch.get("name") == default_branch),
+            ordered_commits[0]["sha"] if ordered_commits else None,
+        )
+
         snapshot = {
             "repository": repo,
+            "defaultBranch": default_branch,
+            "headSha": head_sha,
             "pulls": pulls,
-            "commits": sorted(commits_by_sha.values(), key=lambda item: item["timestamp"], reverse=True)[:100],
+            "commits": ordered_commits,
             "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "rateLimit": {
                 "remaining": min(rate_values) if rate_values else None,
@@ -146,6 +187,109 @@ class GitHubAggregator:
         }
         self.cache.set(repo, snapshot)
         return snapshot
+
+    async def commit_detail(self, repo: str, sha: str) -> dict[str, Any]:
+        if repo not in configured_repositories():
+            raise ValueError("Repository is not configured")
+        owner, name = repo.split("/", 1)
+        root = f"/repos/{owner}/{name}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            detail, _, _ = await self._get(client, f"{root}/commits/{quote(sha, safe='')}")
+        commit_data = detail.get("commit") or {}
+        author = commit_data.get("author") or {}
+        committer = commit_data.get("committer") or {}
+        return {
+            "sha": detail.get("sha", sha),
+            "htmlUrl": detail.get("html_url", ""),
+            "message": commit_data.get("message") or "Commit",
+            "author": author.get("name") or (detail.get("author") or {}).get("login", "unknown"),
+            "authorEmail": author.get("email"),
+            "authoredAt": author.get("date"),
+            "committer": committer.get("name") or (detail.get("committer") or {}).get("login", "unknown"),
+            "committedAt": committer.get("date"),
+            "parents": [item.get("sha", "") for item in detail.get("parents", []) if item.get("sha")],
+            "stats": detail.get("stats") or {"additions": 0, "deletions": 0, "total": 0},
+            "files": [
+                {
+                    "filename": item.get("filename", ""),
+                    "previousFilename": item.get("previous_filename"),
+                    "status": item.get("status", "modified"),
+                    "additions": item.get("additions", 0),
+                    "deletions": item.get("deletions", 0),
+                    "changes": item.get("changes", 0),
+                    "patch": item.get("patch"),
+                    "blobUrl": item.get("blob_url"),
+                    "rawUrl": item.get("raw_url"),
+                }
+                for item in detail.get("files", [])
+            ],
+        }
+    async def file_content(self, repo: str, sha: str, path: str) -> dict[str, Any]:
+        if repo not in configured_repositories():
+            raise ValueError("Repository is not configured")
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            raise ValueError("Invalid file path")
+        owner, name = repo.split("/", 1)
+        root = f"/repos/{owner}/{name}"
+        encoded_path = quote(path, safe="/")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            payload, _, _ = await self._get(client, f"{root}/contents/{encoded_path}?ref={quote(sha, safe='')}")
+        if not isinstance(payload, dict) or payload.get("type") != "file":
+            raise ValueError("Path is not a file")
+        encoded = str(payload.get("content") or "").replace("\n", "")
+        raw = base64.b64decode(encoded) if encoded else b""
+        max_bytes = 750_000
+        truncated = len(raw) > max_bytes
+        raw = raw[:max_bytes]
+        try:
+            text = raw.decode("utf-8")
+            binary = False
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+            binary = True
+        return {
+            "path": path,
+            "sha": payload.get("sha", sha),
+            "size": payload.get("size", len(raw)),
+            "content": text,
+            "binary": binary,
+            "truncated": truncated,
+            "htmlUrl": payload.get("html_url", ""),
+        }
+
+
+def topological_date_order(commits_by_sha: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order commits like git log: every child before its in-set parents, newest tips first."""
+    child_counts = {sha: 0 for sha in commits_by_sha}
+    for commit in commits_by_sha.values():
+        for parent in commit.get("parents", []):
+            if parent in child_counts:
+                child_counts[parent] += 1
+
+    ready = [sha for sha, count in child_counts.items() if count == 0]
+    ordered: list[dict[str, Any]] = []
+    emitted: set[str] = set()
+
+    while ready:
+        ready.sort(key=lambda sha: commits_by_sha[sha].get("timestamp", ""), reverse=True)
+        sha = ready.pop(0)
+        if sha in emitted:
+            continue
+        emitted.add(sha)
+        commit = commits_by_sha[sha]
+        ordered.append(commit)
+        for parent in commit.get("parents", []):
+            if parent not in child_counts:
+                continue
+            child_counts[parent] -= 1
+            if child_counts[parent] == 0:
+                ready.append(parent)
+
+    if len(ordered) != len(commits_by_sha):
+        leftovers = [commit for sha, commit in commits_by_sha.items() if sha not in emitted]
+        leftovers.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+        ordered.extend(leftovers)
+    return ordered
 
 
 def normalize_pull(detail: dict[str, Any], reviews: list[dict[str, Any]], checks: list[dict[str, Any]], commits: list[dict[str, Any]]) -> dict[str, Any]:
@@ -196,9 +340,11 @@ def normalize_commit(commit: dict[str, Any], branch: str, pr_number: int | None 
         "sha": commit.get("sha", ""),
         "message": str(commit_data.get("message") or "Commit").split("\n", 1)[0],
         "author": author_data.get("name") or (commit.get("author") or {}).get("login", "unknown"),
+        "email": author_data.get("email") or "",
         "timestamp": author_data.get("date") or "1970-01-01T00:00:00Z",
         "parents": [parent.get("sha", "") for parent in commit.get("parents", []) if parent.get("sha")],
         "branch": branch,
         "prNumber": pr_number,
+        "refs": [],
     }
 
