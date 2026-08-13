@@ -123,6 +123,57 @@ export type AICommitAnalysis = {
   confidence?: number;
 };
 
+export type AIProjectTeamAction = {
+  name: string;
+  github: string;
+  role: string;
+  now: string;
+  whyNow: string;
+  nextHandoff: string;
+  blockedBy: string[];
+  relatedWork: Array<{ repository: string; pr: number }>;
+  confidence: number;
+};
+
+export type AIProjectPriority = {
+  repository: string;
+  number: number;
+  rank: number;
+  priority: "P0" | "P1" | "P2" | "P3" | string;
+  reason: string;
+  nextAction: string;
+  actorGithub: string;
+  impact: string;
+  confidence: number;
+};
+
+export type AIProjectState = {
+  status: "ready" | "analyzing" | "disabled" | string;
+  model: string;
+  generatedAt?: string;
+  headline?: string;
+  projectHealth?: "ON_TRACK" | "BLOCKED" | "DRIFT" | "OVERENGINEERING" | string;
+  healthReason?: string;
+  currentStep?: { number: number; name: string; confidence: number; why: string; exitGate: string };
+  currentObjective?: string;
+  antiPatternAlerts?: Array<{ severity: "info" | "warning" | "critical" | string; title: string; reason: string; stopDoing: string; doInstead: string }>;
+  teamActions?: AIProjectTeamAction[];
+  prPriorities?: AIProjectPriority[];
+  changesSinceLast?: string[];
+  contextSummary?: string;
+  trigger?: { repository?: string; event?: string; action?: string | null; number?: number | null };
+  analysisSequence?: number;
+  projectMemoryRevision?: string;
+};
+
+export type AIChatMessage = { role: "user" | "assistant"; content: string };
+export type AIChatResponse = {
+  answer: string;
+  suggestedQuestions?: string[];
+  model: string;
+  generatedAt: string;
+};
+
 async function json<T>(url: string): Promise<T> {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
   if (!response.ok) {
@@ -164,4 +215,19 @@ export async function loadAIPriority(repo: string, force = false): Promise<AIPri
 export async function loadAICommit(repo: string, sha: string): Promise<AICommitAnalysis> {
   const params = new URLSearchParams({ repo, sha });
   return json<AICommitAnalysis>(`${API_BASE}/ai/commit?${params}`);
+}
+
+export async function loadAIProject(force = false): Promise<AIProjectState> {
+  const params = new URLSearchParams({ force: String(force) });
+  return json<AIProjectState>(`${API_BASE}/ai/project?${params}`);
+}
+
+export async function askAIProject(question: string, history: AIChatMessage[]): Promise<AIChatResponse> {
+  const response = await fetch(`${API_BASE}/ai/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, history }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<AIChatResponse>;
 }
