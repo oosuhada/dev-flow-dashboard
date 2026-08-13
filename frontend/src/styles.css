@@ -73,6 +73,8 @@ button { color: inherit; }
   padding: 0 8px; background: #1b1b1b; border-bottom: 1px solid #303030;
 }
 .pr-state-filters, .pr-view-controls, .pr-graph-scope { min-width: 0; display: flex; align-items: center; gap: 3px; }
+.pr-sort-control { height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 5px 0 7px; border: 1px solid #383838; border-radius: 3px; color: #777; font-size: 9px; }
+.pr-sort-control select { height: 18px; padding: 0 18px 0 3px; border: 0; outline: 0; background: transparent; color: #b9b9b9; font-size: 9px; }
 .pr-filterbar button { height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 0; border-radius: 3px; background: transparent; color: #969696; font-size: 10px; }
 .pr-filterbar button:hover { background: #292929; color: #ccc; }
 .pr-filterbar button.active { background: #37373d; color: #fff; }
@@ -301,6 +303,12 @@ button { color: inherit; }
 .pr-body-card, .activity-card { overflow: hidden; margin-bottom: 10px; border: 1px solid #393939; border-radius: 4px; background: #202020; }
 .pr-body-card header, .activity-card header { min-height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 9px; background: #252526; border-bottom: 1px solid #383838; color: #999; font-size: 9px; }
 .pr-body-card header strong, .activity-card header strong { color: #d3d3d3; }
+.collapse-toggle { width: 24px; height: 22px; margin-left: auto; display: grid; place-items: center; flex: 0 0 auto; border: 0; border-radius: 3px; background: transparent; color: #8c8c8c; }
+.collapse-toggle:hover { background: #343434; color: #ddd; }
+.collapsed-preview { width: 100%; min-height: 36px; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 0; background: transparent; color: #969696; text-align: left; font-size: 9px; }
+.collapsed-preview:hover { background: #252525; }
+.collapsed-preview span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collapsed-preview small { flex: 0 0 auto; color: #75b6e7; font-size: 8px; }
 .markdown-body { padding: 9px 10px; color: #d1d1d1; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
 .markdown-body > :first-child { margin-top: 0; }.markdown-body > :last-child { margin-bottom: 0; }
 .markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body blockquote, .markdown-body pre, .markdown-body table { margin: 7px 0; }
@@ -327,6 +335,127 @@ button { color: inherit; }
 .pr-commit-list code { color: #aaa; font: 9px "SFMono-Regular", Consolas, monospace; }
 .commit-node-mini, .check-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; border: 2px solid #0085d9; }
 .check-success { border-color: #52c878; background: #204c34; }.check-failure, .check-cancelled, .check-timed_out { border-color: #f48771; background: #51282a; }.check-in_progress, .check-queued { border-color: #e2c08d; }
+
+html[data-theme="light"] {
+  color: #333;
+  background: #fff;
+  --editor: #ffffff;
+  --panel: #f3f3f3;
+  --panel-2: #fafafa;
+  --line: #d5d5d5;
+  --line-soft: #e7e7e7;
+  --muted: #6f6f6f;
+  --hover: #f0f0f0;
+  --selected: #e6f2ff;
+  --active: #cce8ff;
+  --focus: #0067c0;
+  --added: #16823b;
+  --modified: #8a6500;
+  --deleted: #c42b1c;
+}
+html[data-theme="light"] .app-titlebar { background: #f8f8f8; }
+html[data-theme="light"] .app-mark { color: #252525; }
+html[data-theme="light"] .repo-picker select,
+html[data-theme="light"] .graph-search { color: #333; background: #fff; border-color: #c9c9c9; }
+html[data-theme="light"] .graph-search input { color: #222; }
+html[data-theme="light"] .graph-search input::placeholder { color: #8a8a8a; }
+html[data-theme="light"] .title-actions { color: #666; }
+html[data-theme="light"] .title-actions button:hover,
+html[data-theme="light"] .tabs button:hover,
+html[data-theme="light"] .pr-filterbar button:hover,
+html[data-theme="light"] .tree-entry:hover,
+html[data-theme="light"] .view-tabs button:hover,
+html[data-theme="light"] .view-tabs a:hover,
+html[data-theme="light"] .pr-commit-list a:hover,
+html[data-theme="light"] .pr-check-list a:hover { background: #e9e9e9; color: #222; }
+html[data-theme="light"] .pr-filterbar { background: #fafafa; border-color: #ddd; }
+html[data-theme="light"] .pr-filterbar button { color: #666; }
+html[data-theme="light"] .pr-filterbar button.active { background: #e5e5e5; color: #222; }
+html[data-theme="light"] .pr-sort-control { border-color: #ccc; color: #777; background: #fff; }
+html[data-theme="light"] .pr-sort-control select { color: #333; }
+html[data-theme="light"] .relations-toggle { border-color: #ccc !important; }
+html[data-theme="light"] .relations-toggle.active { border-color: #8cb4d8 !important; background: #e7f2fb !important; color: #245d8a !important; }
+html[data-theme="light"] .tabs button { color: #666; border-color: #ddd; }
+html[data-theme="light"] .tabs button.active { color: #111; }
+html[data-theme="light"] .tabs button > span { background: #e1e1e1; color: #555; }
+html[data-theme="light"] .commit-table-head,
+html[data-theme="light"] .pr-list-head,
+html[data-theme="light"] .pr-graph-head,
+html[data-theme="light"] .inspector-titlebar,
+html[data-theme="light"] .files-title,
+html[data-theme="light"] .file-preview-bar,
+html[data-theme="light"] .pr-inspector-tabs,
+html[data-theme="light"] .pr-body-card header,
+html[data-theme="light"] .activity-card header { color: #666; background: #f3f3f3; border-color: #d9d9d9; }
+html[data-theme="light"] .commit-table-head span,
+html[data-theme="light"] .pr-list-head span,
+html[data-theme="light"] .pr-graph-head span { border-color: #ddd; }
+html[data-theme="light"] .commit-svg,
+html[data-theme="light"] .pr-graph-svg,
+html[data-theme="light"] .changed-files,
+html[data-theme="light"] .diff-line > span,
+html[data-theme="light"] .code-line > span { background: #fafafa; border-color: #ddd; }
+html[data-theme="light"] .git-edge-shadow { stroke: #fafafa; }
+html[data-theme="light"] .commit-row,
+html[data-theme="light"] .pr-list-row,
+html[data-theme="light"] .pr-graph-row { color: #333; border-color: #ededed; }
+html[data-theme="light"] .commit-message,
+html[data-theme="light"] .pr-title-text,
+html[data-theme="light"] .commit-subject,
+html[data-theme="light"] .pr-summary h2 { color: #222; }
+html[data-theme="light"] .commit-row.selected,
+html[data-theme="light"] .pr-list-row.selected,
+html[data-theme="light"] .pr-graph-row.selected { background: var(--active); }
+html[data-theme="light"] .commit-row time,
+html[data-theme="light"] .commit-author,
+html[data-theme="light"] .commit-row > code,
+html[data-theme="light"] .pr-author,
+html[data-theme="light"] .pr-branch,
+html[data-theme="light"] .pr-list-row > time,
+html[data-theme="light"] .pr-graph-row > time { color: #666; }
+html[data-theme="light"] .ref-pill,
+html[data-theme="light"] .pr-ref { background: #f5f5f5; color: #444; border-color: #bbb; }
+html[data-theme="light"] .commit-inspector,
+html[data-theme="light"] .pr-inspector { border-color: #d6d6d6; }
+html[data-theme="light"] .inspector-titlebar code,
+html[data-theme="light"] .commit-meta strong,
+html[data-theme="light"] .pr-body-card header strong,
+html[data-theme="light"] .activity-card header strong { color: #333; }
+html[data-theme="light"] .tree-entry { color: #555; }
+html[data-theme="light"] .tree-entry.active { color: #111; }
+html[data-theme="light"] .view-tabs button,
+html[data-theme="light"] .view-tabs a { color: #666; border-color: #ddd; }
+html[data-theme="light"] .view-tabs button.active,
+html[data-theme="light"] .pr-inspector-tabs button.active { color: #111; }
+html[data-theme="light"] .diff-view,
+html[data-theme="light"] .code-view { color: #24292f; background: #fff; }
+html[data-theme="light"] .diff-line.add { background: #e6ffec; color: #1f2328; }
+html[data-theme="light"] .diff-line.del { background: #ffebe9; color: #1f2328; }
+html[data-theme="light"] .diff-line.hunk { background: #ddf4ff; color: #0550ae; }
+html[data-theme="light"] .pr-body-card,
+html[data-theme="light"] .activity-card { background: #fff; border-color: #d8d8d8; }
+html[data-theme="light"] .markdown-body { color: #333; }
+html[data-theme="light"] .markdown-body h1,
+html[data-theme="light"] .markdown-body h2,
+html[data-theme="light"] .markdown-body h3,
+html[data-theme="light"] .markdown-body h4 { color: #1f2328; }
+html[data-theme="light"] .markdown-body code,
+html[data-theme="light"] .markdown-body pre { color: #24292f; background: #f6f8fa; border-color: #d8dee4; }
+html[data-theme="light"] .markdown-body th { background: #f6f8fa; }
+html[data-theme="light"] .markdown-body th,
+html[data-theme="light"] .markdown-body td { border-color: #d0d7de; }
+html[data-theme="light"] .activity-list::before { background: #d0d7de; }
+html[data-theme="light"] .activity-event { color: #666; }
+html[data-theme="light"] .activity-event .activity-dot { background: #fff; border-color: #aaa; }
+html[data-theme="light"] .activity-event strong { color: #333; }
+html[data-theme="light"] .collapse-toggle { color: #666; }
+html[data-theme="light"] .collapse-toggle:hover,
+html[data-theme="light"] .collapsed-preview:hover { background: #f3f3f3; color: #222; }
+html[data-theme="light"] .collapsed-preview { color: #666; }
+html[data-theme="light"] .pr-commit-list a,
+html[data-theme="light"] .pr-check-list a { color: #555; border-color: #e3e3e3; }
+html[data-theme="light"] .pr-commit-list strong,
+html[data-theme="light"] .pr-check-list strong { color: #222; }
 
 @media (max-width: 1100px) {
   .workbench.with-inspector { grid-template-columns: minmax(480px, 52%) minmax(420px, 48%); }
