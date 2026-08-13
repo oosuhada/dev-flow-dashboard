@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   AlertTriangle,
+  Bell,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -31,6 +32,7 @@ import {
   askAIProject,
   loadAICommit,
   loadAIProject,
+  loadActivity,
   loadCommit,
   loadFile,
   loadPull,
@@ -39,6 +41,7 @@ import {
   type AICommitAnalysis,
   type AIChatMessage,
   type AIProjectState,
+  type ActivityItem,
   type CommitDetail,
   type CommitFile,
   type CommitRecord,
@@ -66,25 +69,64 @@ function laneColor(lane: number) {
   return GRAPH_COLORS[lane % GRAPH_COLORS.length];
 }
 
-function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, query }: {
+function relativeAge(value: string) {
+  const ageMs = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return `${Math.floor(days / 7)}w`;
+}
+
+function activityBucket(value: string): "1h" | "1d" | "1w" | "older" {
+  const ageMs = Math.max(0, Date.now() - new Date(value).getTime());
+  if (ageMs <= 60 * 60 * 1000) return "1h";
+  if (ageMs <= 24 * 60 * 60 * 1000) return "1d";
+  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return "1w";
+  return "older";
+}
+
+function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, query, columnWidths, onColumnWidths }: {
   commits: CommitRecord[];
   headSha: string | null;
   defaultBranch: string;
   selected: string | null;
   onSelect: (commit: CommitRecord) => void;
   query: string;
+  columnWidths: [number, number, number, number, number];
+  onColumnWidths: (value: [number, number, number, number, number]) => void;
 }) {
   const visible = useMemo(() => commits.slice(0, 100), [commits]);
   const head = headSha ?? visible[0]?.sha ?? null;
   const layout = useMemo(() => computeGraphLayout(visible, head), [visible, head]);
   const strokes = useMemo(() => layout.branches.flatMap((branch) => branchStrokes(branch, false)), [layout]);
-  const width = Math.max(64, graphWidth(layout) + GRAPH_PADDING);
+  const layoutWidth = Math.max(64, graphWidth(layout) + GRAPH_PADDING);
+  const width = Math.max(layoutWidth, columnWidths[0]);
   const height = Math.max(ROW_HEIGHT, graphHeight(layout));
   const needle = query.trim().toLowerCase();
+  const effectiveWidths: [number, number, number, number, number] = [width, ...columnWidths.slice(1)] as [number, number, number, number, number];
+  const headerTemplate = effectiveWidths.map((value) => `${value}px`).join(" ");
+  const rowTemplate = effectiveWidths.slice(1).map((value) => `${value}px`).join(" ");
+  const tableWidth = effectiveWidths.reduce((sum, value) => sum + value, 0);
+  const minWidths = [layoutWidth, 260, 110, 100, 76];
+  function startColumnResize(index: number, startX: number) {
+    const startWidth = effectiveWidths[index];
+    const move = (event: PointerEvent) => {
+      const next = [...effectiveWidths] as [number, number, number, number, number];
+      next[index] = Math.max(minWidths[index], startWidth + event.clientX - startX);
+      onColumnWidths(next);
+    };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); document.body.classList.remove("is-resizing"); };
+    document.body.classList.add("is-resizing");
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  }
+  const headers = ["Graph", "Description", "Date", "Author", "Commit"];
 
-  return <div className="commit-table" data-testid="commit-graph">
-    <div className="commit-table-head" style={{ gridTemplateColumns: `${width}px minmax(330px,1fr) 150px 130px 92px` }}>
-      <span>Graph</span><span>Description</span><span>Date</span><span>Author</span><span>Commit</span>
+  return <div className="commit-table" data-testid="commit-graph" style={{ minWidth: `${tableWidth}px`, width: `${tableWidth}px` }}>
+    <div className="commit-table-head" style={{ gridTemplateColumns: headerTemplate }}>
+      {headers.map((label, index) => <span key={label} className="commit-column-head">{label}{index < headers.length - 1 && <i className="column-resizer" onPointerDown={(event) => { event.preventDefault(); startColumnResize(index, event.clientX); }}/>}</span>)}
     </div>
     <div className="commit-table-body">
       <div className="commit-svg" style={{ width }}>
@@ -110,13 +152,13 @@ function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, quer
           })}
         </svg>
       </div>
-      <div className="commit-rows" style={{ marginLeft: width }}>
+      <div className="commit-rows" style={{ marginLeft: width, width: `${tableWidth - width}px`, minWidth: `${tableWidth - width}px` }}>
         {visible.map((commit, index) => {
           const colour = layout.vertices[index]?.colour ?? 0;
           const orderedRefs = [...commit.refs].sort((a, b) => Number(b.type === "head" && b.name === defaultBranch) - Number(a.type === "head" && a.name === defaultBranch));
           const haystack = `${commit.sha} ${commit.message} ${commit.author} ${commit.refs.map((ref) => ref.name).join(" ")} ${commit.prNumber ?? ""}`.toLowerCase();
           const filteredOut = needle !== "" && !haystack.includes(needle);
-          return <button key={commit.sha} className={`commit-row ${selected === commit.sha ? "selected" : ""} ${filteredOut ? "filtered-out" : ""}`} onClick={() => onSelect(commit)}>
+          return <button key={commit.sha} style={{ gridTemplateColumns: rowTemplate }} className={`commit-row ${selected === commit.sha ? "selected" : ""} ${filteredOut ? "filtered-out" : ""}`} onClick={() => onSelect(commit)}>
             <div className="commit-description">
               {head === commit.sha && <span className="head-marker" style={{ borderColor: laneColor(colour) }} aria-label="HEAD"/>}
               {orderedRefs.map((ref) => <span key={`${ref.type}-${ref.name}`} className={`ref-pill ref-${ref.type}`} style={{ borderColor: ref.type === "head" && ref.name === defaultBranch ? laneColor(colour) : undefined }} title={`${ref.type}: ${ref.name}`}>
@@ -481,18 +523,42 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   </div>;
 }
 
-function AIProjectSidebar({ state, loading, currentRepo, onRefresh, onSelectPull }: {
+function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, onRefresh, onSelectPull, onMarkActivityRead, onRefreshActivity }: {
   state: AIProjectState | null;
   loading: boolean;
   currentRepo: string;
+  activity: ActivityItem[];
+  unreadCount: number;
   onRefresh: () => void;
   onSelectPull: (repository: string, number: number) => void;
+  onMarkActivityRead: () => void;
+  onRefreshActivity: () => void;
 }) {
-  const [tab, setTab] = useState<"pm" | "chat">("pm");
+  const [tab, setTab] = useState<"pm" | "chat" | "activity">("pm");
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [messages, setMessages] = useState<AIChatMessage[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>(["그 다음에 뭐할까?", "지금 가장 큰 병목은 뭐야?", "각 팀원이 지금 해야 할 일 알려줘"]);
+  const [collapsedBuckets, setCollapsedBuckets] = useState<Set<string>>(() => new Set(["older"]));
+
+  const groupedActivity = useMemo(() => {
+    const groups: Record<"1h" | "1d" | "1w" | "older", ActivityItem[]> = { "1h": [], "1d": [], "1w": [], older: [] };
+    for (const item of activity) groups[activityBucket(item.createdAt)].push(item);
+    return groups;
+  }, [activity]);
+
+  function selectTab(value: "pm" | "chat" | "activity") {
+    setTab(value);
+    if (value === "activity") onMarkActivityRead();
+  }
+
+  function toggleBucket(bucket: string) {
+    setCollapsedBuckets((current) => {
+      const next = new Set(current);
+      if (!next.delete(bucket)) next.add(bucket);
+      return next;
+    });
+  }
 
   async function sendChat(question = chatInput) {
     const value = question.trim();
@@ -515,7 +581,7 @@ function AIProjectSidebar({ state, loading, currentRepo, onRefresh, onSelectPull
       <div><Sparkles size={13}/><strong>AI Project Manager</strong>{loading && <small>re-evaluating…</small>}</div>
       <button onClick={onRefresh} title="Re-evaluate now"><RefreshCw size={12}/></button>
     </header>
-    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => setTab("pm")}>PM</button><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>Chat</button></nav>
+    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => selectTab("pm")}>PM</button><button className={tab === "chat" ? "active" : ""} onClick={() => selectTab("chat")}>Chat</button><button className={tab === "activity" ? "active" : ""} onClick={() => selectTab("activity")}><Bell size={11}/> Activity {unreadCount > 0 && <span className="activity-unread">{unreadCount > 99 ? "99+" : unreadCount}</span>}</button></nav>
     {tab === "pm" ? <div className="ai-sidebar-scroll">
       <div className="pm-status-row"><span className={`pm-health health-${(state?.projectHealth ?? "loading").toLowerCase()}`}>{state?.projectHealth ?? "ANALYZING"}</span>{state?.currentStep && <span className="pm-step">Step {state.currentStep.number} · {state.currentStep.name}</span>}</div>
       <div className="ai-headline"><span>NOW</span><strong>{state?.headline || "Project Manager가 현재 상태를 읽는 중입니다…"}</strong></div>
@@ -531,10 +597,26 @@ function AIProjectSidebar({ state, loading, currentRepo, onRefresh, onSelectPull
       {(state?.antiPatternAlerts ?? []).length > 0 && <section className="pm-alerts"><h3>PM warnings</h3>{state?.antiPatternAlerts?.slice(0, 4).map((alert, index) => <article key={`${alert.title}-${index}`} className={`pm-alert severity-${alert.severity}`}><header><AlertTriangle size={11}/><strong>{alert.title}</strong></header><p>{alert.reason}</p><div><span>STOP</span>{alert.stopDoing}</div><div><span>DO</span>{alert.doInstead}</div></article>)}</section>}
       <section className="pm-queue"><h3>PR queue</h3>{(state?.prPriorities ?? []).slice(0, 10).map((item) => <button key={`${item.repository}-${item.number}`} onClick={() => onSelectPull(item.repository, item.number)}><span className="ai-rank">{item.rank}</span><strong>{item.repository.split("/").at(-1)} #{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><p>{item.nextAction}</p></button>)}</section>
       {state?.generatedAt && <footer>Gemini 3.7 Flash · {shortDate(state.generatedAt)}</footer>}
-    </div> : <div className="ai-chat">
+    </div> : tab === "chat" ? <div className="ai-chat">
       <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={18}/><strong>프로젝트 맥락을 기억하고 있습니다.</strong><span>다음 작업, 병목, 팀원별 역할, PR 우선순위를 물어보세요.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>)}{chatLoading && <div className="ai-chat-thinking">Gemini가 현재 PM 상태를 확인하는 중…</div>}</div>
       {suggestions.length > 0 && <div className="ai-chat-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void sendChat(suggestion)}>{suggestion}</button>)}</div>}
       <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="그 다음에 뭐할까?" rows={2}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
+    </div> : <div className="activity-inbox">
+      <div className="activity-toolbar"><div><Bell size={12}/><strong>Live activity</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh activity"><RefreshCw size={11}/></button></div>
+      {activity.length === 0 && <div className="activity-empty">GitHub 변화가 들어오면 여기에 누적됩니다.</div>}
+      {(["1h", "1d", "1w", "older"] as const).map((bucket) => {
+        const items = groupedActivity[bucket];
+        if (items.length === 0) return null;
+        const collapsed = collapsedBuckets.has(bucket);
+        const label = bucket === "older" ? "Older" : bucket;
+        return <section className="activity-group" key={bucket}>
+          <button className="activity-group-head" onClick={() => toggleBucket(bucket)}>{collapsed ? <ChevronRight size={12}/> : <ChevronDown size={12}/>}<strong>{label}</strong><span>{items.length}</span></button>
+          {!collapsed && <div className="activity-items">{items.map((item) => <button key={item.id} className={`activity-item source-${item.source}`} onClick={() => item.number ? onSelectPull(item.repository, item.number) : undefined} title={new Date(item.createdAt).toLocaleString()}>
+            <span className="activity-source-dot"/>
+            <div><header><strong>{item.title}</strong><time>{relativeAge(item.createdAt)}</time></header><p>{item.summary || `${item.event}${item.action ? ` · ${item.action}` : ""}`}</p><footer><span>{item.repository.split("/").at(-1)}</span>{item.actor && <span>@{item.actor}</span>}<time>{shortDate(item.createdAt)}</time></footer></div>
+          </button>)}</div>}
+        </section>;
+      })}
     </div>}
   </aside>;
 }
@@ -648,6 +730,8 @@ export function App() {
   const [liveConnected, setLiveConnected] = useState(false);
   const [aiProject, setAIProject] = useState<AIProjectState | null>(null);
   const [aiLoading, setAILoading] = useState(false);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [lastSeenActivityId, setLastSeenActivityId] = useState(() => Number(window.localStorage.getItem("dev-flow-activity-seen")) || 0);
   const [aiPanelOpen, setAIPanelOpen] = useState(() => window.localStorage.getItem("dev-flow-ai-panel") !== "closed");
   const [aiPanelWidth, setAIPanelWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-ai-width")) || 360);
   const [inspectorWidth, setInspectorWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-inspector-width")) || 520);
@@ -657,6 +741,13 @@ export function App() {
       if (Array.isArray(saved) && saved.length === 6 && saved.every((value) => Number.isFinite(value))) return saved as [number, number, number, number, number, number];
     } catch { /* use defaults */ }
     return [420, 120, 220, 160, 220, 110];
+  });
+  const [commitColumnWidths, setCommitColumnWidths] = useState<[number, number, number, number, number]>(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("dev-flow-commit-columns") ?? "null");
+      if (Array.isArray(saved) && saved.length === 5 && saved.every((value) => Number.isFinite(value))) return saved as [number, number, number, number, number];
+    } catch { /* use defaults */ }
+    return [150, 520, 150, 130, 92];
   });
   const [pendingPull, setPendingPull] = useState<{ repository: string; number: number } | null>(null);
 
@@ -686,6 +777,15 @@ export function App() {
   useEffect(() => { window.localStorage.setItem("dev-flow-ai-width", String(aiPanelWidth)); }, [aiPanelWidth]);
   useEffect(() => { window.localStorage.setItem("dev-flow-inspector-width", String(inspectorWidth)); }, [inspectorWidth]);
   useEffect(() => { window.localStorage.setItem("dev-flow-pr-columns", JSON.stringify(prColumnWidths)); }, [prColumnWidths]);
+  useEffect(() => { window.localStorage.setItem("dev-flow-commit-columns", JSON.stringify(commitColumnWidths)); }, [commitColumnWidths]);
+  useEffect(() => { window.localStorage.setItem("dev-flow-activity-seen", String(lastSeenActivityId)); }, [lastSeenActivityId]);
+
+  async function refreshActivity() {
+    try { setActivity(await loadActivity()); }
+    catch { /* activity is secondary to the GitHub workbench */ }
+  }
+
+  useEffect(() => { void refreshActivity(); }, []);
 
   useEffect(() => {
     if (!repo) return;
@@ -712,11 +812,13 @@ export function App() {
     });
     source.addEventListener("project", () => {
       void loadAIProject().then((value) => { setAIProject(value); setAILoading(false); }).catch(() => setAILoading(false));
+      void refreshActivity();
       if (selectedCommit) {
         setCommitAILoading(true);
         void loadAICommit(repo, selectedCommit).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
       }
     });
+    source.addEventListener("activity", () => { void refreshActivity(); });
     const fallback = window.setInterval(() => void refresh(repo), 60_000);
     return () => {
       source.close();
@@ -779,6 +881,12 @@ export function App() {
   ) : [], [snapshot]);
   const flowByNumber = useMemo(() => new Map(openPullModels.map((pull) => [pull.number, pull])), [openPullModels]);
   const aiRanks = useMemo(() => new Map((aiProject?.prPriorities ?? []).filter((item) => item.repository === repo).map((item) => [item.number, item.rank])), [aiProject, repo]);
+  const unreadActivityCount = useMemo(() => activity.filter((item) => item.id > lastSeenActivityId).length, [activity, lastSeenActivityId]);
+
+  function markActivityRead() {
+    const newest = activity[0]?.id ?? lastSeenActivityId;
+    if (newest > lastSeenActivityId) setLastSeenActivityId(newest);
+  }
   const pullCounts = useMemo(() => {
     const pulls = snapshot?.pulls ?? [];
     return {
@@ -829,7 +937,7 @@ export function App() {
     <header className="app-titlebar">
       <div className="app-mark"><GitBranch size={15}/><strong>Dev Flow</strong></div>
       <div className="repo-picker"><select aria-label="Repository" value={repo} onChange={(event) => setRepo(event.target.value)}>{repos.map((item) => <option key={item}>{item}</option>)}</select></div>
-      <div className="title-actions"><button className={`ai-toggle ${aiPanelOpen ? "active" : ""}`} onClick={() => setAIPanelOpen((value) => !value)} title="AI Project Manager"><Sparkles size={14}/></button><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
+      <div className="title-actions"><button className={`ai-toggle ${aiPanelOpen ? "active" : ""}`} onClick={() => setAIPanelOpen((value) => !value)} title="AI Project Manager"><Sparkles size={14}/>{unreadActivityCount > 0 && <span className="toolbar-unread">{unreadActivityCount > 99 ? "99+" : unreadActivityCount}</span>}</button><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
     </header>
 
     <div className="app-toolbar">
@@ -849,7 +957,7 @@ export function App() {
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
     <section className={`workbench ${hasInspector ? "with-inspector" : ""} ${aiPanelOpen ? "with-ai" : ""}`} style={{ gridTemplateColumns: workbenchColumns }}>
-      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
+      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} activity={activity} unreadCount={unreadActivityCount} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork} onMarkActivityRead={markActivityRead} onRefreshActivity={() => void refreshActivity()}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
       <div className="graph-pane">
         {loading && !snapshot ? <div className="center-message">Loading…</div> : null}
         {snapshot && tab === "commits" && <CommitGraph
@@ -859,6 +967,8 @@ export function App() {
           selected={selectedCommit}
           onSelect={(commit) => void inspectCommit(commit)}
           query={query}
+          columnWidths={commitColumnWidths}
+          onColumnWidths={setCommitColumnWidths}
         />}
         {snapshot && tab === "pulls" && (showPullGraph
           ? <PullRequestGraph

@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .activity import activity_store
 from .ai import ai_advisor
 from .events import DashboardEvent, event_hub
 from .github import GitHubAggregator, configured_repositories
@@ -159,11 +160,26 @@ async def _run_project_pm(
                     pull_detail_data = await aggregator.pull_detail(trigger_repo, number)
                 except (RuntimeError, ValueError):
                     pull_detail_data = None
-            await ai_advisor.analyze_project(
+            project_state = await ai_advisor.analyze_project(
                 snapshots,
                 {"repository": trigger_repo, "event": event_name, "action": action, "number": number},
                 memory,
                 pull_detail_data,
+            )
+            activity_store.add(
+                source="ai_pm",
+                repository=trigger_repo,
+                event="ai_project",
+                action="completed",
+                number=number,
+                actor="gemini-3.7-flash",
+                title=str(project_state.get("headline") or "AI Project Manager updated"),
+                summary=" · ".join(str(item) for item in (project_state.get("changesSinceLast") or [])[:3]) or str(project_state.get("currentObjective") or ""),
+                metadata={
+                    "projectHealth": project_state.get("projectHealth"),
+                    "analysisSequence": project_state.get("analysisSequence"),
+                    "trigger": project_state.get("trigger"),
+                },
             )
             # Project PM is cross-repository. Broadcast completion to every open
             # repository SSE subscription so the always-on console refreshes
@@ -298,7 +314,7 @@ async def events(repo: str = Query(...)) -> StreamingResponse:
                     continue
                 if event.repo != repo:
                     continue
-                channel = "project" if event.event == "ai_project" else ("ai" if event.event == "ai_analysis" else "github")
+                channel = "activity" if event.event == "activity" else ("project" if event.event == "ai_project" else ("ai" if event.event == "ai_analysis" else "github"))
                 yield f"event: {channel}\ndata: {event.encode()}\n\n"
         finally:
             event_hub.unsubscribe(queue)
@@ -340,10 +356,26 @@ async def github_webhook(request: Request) -> dict[str, object]:
             number = None
 
     aggregator.cache.clear(repo)
+    if event_name != "ping":
+        activity_id = activity_store.add_github(repo, event_name, action, number, payload)
+        # Notifications are project-wide. Broadcast to every open repository
+        # subscription so a gen_data event is visible while ontology_dashboard
+        # is selected (and vice versa).
+        for subscribed_repo in configured_repositories():
+            event_hub.publish(DashboardEvent(repo=subscribed_repo, event="activity", action=str(activity_id), number=number))
     event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
     if event_name != "ping":
         _schedule_project_pm(repo, event_name, action, number)
     return {"accepted": True, "repo": repo, "event": event_name, "number": number}
+
+
+@app.get("/api/activity")
+@app.get(f"{DASHBOARD_PREFIX}/api/activity")
+async def activity(limit: int = Query(300, ge=1, le=1000), repo: str | None = Query(None)) -> dict[str, object]:
+    if repo is not None and repo not in configured_repositories():
+        raise HTTPException(status_code=400, detail="Repository is not configured")
+    items = activity_store.list(limit=limit, repository=repo)
+    return {"items": items, "count": len(items)}
 
 
 @app.get("/api/ai/project")
