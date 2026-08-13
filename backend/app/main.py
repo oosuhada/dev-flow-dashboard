@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
+import json
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .events import DashboardEvent, event_hub
 from .github import GitHubAggregator, configured_repositories
 
 DASHBOARD_PREFIX = "/dev_dashboard"
@@ -15,6 +21,56 @@ app = FastAPI(
     openapi_url=f"{DASHBOARD_PREFIX}/api/openapi.json",
 )
 aggregator = GitHubAggregator()
+_watch_task: asyncio.Task[None] | None = None
+
+
+def _webhook_secret() -> str:
+    return os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+
+def _verify_webhook(body: bytes, signature: str | None) -> bool:
+    secret = _webhook_secret()
+    if not secret or not signature or not signature.startswith("sha256="):
+        return False
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, f"sha256={digest}")
+
+
+async def _watch_github() -> None:
+    fingerprints: dict[str, str] = {}
+    while True:
+        for repo in configured_repositories():
+            try:
+                current = await aggregator.repository_fingerprint(repo)
+                previous = fingerprints.get(repo)
+                fingerprints[repo] = current
+                if previous is not None and current != previous:
+                    aggregator.cache.clear(repo)
+                    event_hub.publish(DashboardEvent(repo=repo, event="repository_changed"))
+            except (RuntimeError, ValueError):
+                # A transient GitHub error must not kill the watcher; the next
+                # interval retries and the browser also reconnects SSE itself.
+                pass
+        await asyncio.sleep(12)
+
+
+@app.on_event("startup")
+async def start_github_watcher() -> None:
+    global _watch_task
+    if _watch_task is None or _watch_task.done():
+        _watch_task = asyncio.create_task(_watch_github())
+
+
+@app.on_event("shutdown")
+async def stop_github_watcher() -> None:
+    global _watch_task
+    if _watch_task is not None:
+        _watch_task.cancel()
+        try:
+            await _watch_task
+        except asyncio.CancelledError:
+            pass
+        _watch_task = None
 
 
 @app.get("/api/health")
@@ -32,6 +88,69 @@ async def health() -> dict[str, object]:
 @app.get(f"{DASHBOARD_PREFIX}/api/repositories")
 async def repositories() -> dict[str, list[str]]:
     return {"repositories": configured_repositories()}
+
+
+@app.get("/api/events")
+@app.get(f"{DASHBOARD_PREFIX}/api/events")
+async def events(repo: str = Query(...)) -> StreamingResponse:
+    if repo not in configured_repositories():
+        raise HTTPException(status_code=400, detail="Repository is not configured")
+
+    async def stream():
+        queue = event_hub.subscribe()
+        try:
+            yield "retry: 2000\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                if event.repo != repo:
+                    continue
+                yield f"event: github\ndata: {event.encode()}\n\n"
+        finally:
+            event_hub.unsubscribe(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/github/webhook")
+@app.post(f"{DASHBOARD_PREFIX}/api/github/webhook")
+async def github_webhook(request: Request) -> dict[str, object]:
+    body = await request.body()
+    if not _verify_webhook(body, request.headers.get("X-Hub-Signature-256")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload") from exc
+
+    repo = str(((payload.get("repository") or {}).get("full_name") or ""))
+    if repo not in configured_repositories():
+        return {"accepted": False, "reason": "repository-not-configured"}
+
+    event_name = request.headers.get("X-GitHub-Event", "unknown")
+    action = payload.get("action")
+    number = payload.get("number")
+    if not isinstance(number, int):
+        issue = payload.get("issue") or {}
+        pull_request = payload.get("pull_request") or {}
+        number = issue.get("number") or pull_request.get("number")
+        if not isinstance(number, int):
+            number = None
+
+    aggregator.cache.clear(repo)
+    event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
+    return {"accepted": True, "repo": repo, "event": event_name, "number": number}
 
 
 @app.get("/api/snapshot")

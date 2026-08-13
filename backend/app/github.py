@@ -83,6 +83,43 @@ class GitHubAggregator:
             raise RuntimeError(f"GitHub API {response.status_code}: {detail}")
         return response.json(), remaining, limit
 
+    async def repository_fingerprint(self, repo: str) -> str:
+        """Cheap change detector used by the live SSE watcher.
+
+        Pull request `updated_at` changes for reviews/comments and a new head SHA
+        changes for pushes. The latest default-branch commit catches merged/direct
+        pushes that may not otherwise move the most-recent PR list.
+        """
+        if repo not in configured_repositories():
+            raise ValueError("Repository is not configured")
+        owner, name = repo.split("/", 1)
+        root = f"/repos/{owner}/{name}"
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            repo_meta, _, _ = await self._get(client, root)
+            default_branch = str(repo_meta.get("default_branch") or "main")
+            pulls, _, _ = await self._get(
+                client,
+                f"{root}/pulls?state=all&per_page=20&sort=updated&direction=desc",
+            )
+            commits, _, _ = await self._get(
+                client,
+                f"{root}/commits?sha={quote(default_branch, safe='')}&per_page=1",
+            )
+        pull_bits = [
+            ":".join(
+                [
+                    str(item.get("number", "")),
+                    str(item.get("updated_at", "")),
+                    str(((item.get("head") or {}).get("sha") or "")),
+                    str(item.get("state", "")),
+                    str(bool(item.get("draft"))),
+                ]
+            )
+            for item in pulls
+        ]
+        head_sha = str((commits[0] if commits else {}).get("sha", ""))
+        return "|".join([head_sha, *pull_bits])
+
     async def snapshot(self, repo: str, force: bool = False) -> dict[str, Any]:
         if repo not in configured_repositories():
             raise ValueError("Repository is not configured")
