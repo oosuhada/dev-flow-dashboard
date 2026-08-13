@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -98,7 +99,7 @@ class GitHubAggregator:
         async with httpx.AsyncClient(timeout=20.0) as client:
             initial = await asyncio.gather(
                 self._get(client, root),
-                self._get(client, f"{root}/pulls?state=open&per_page=100&sort=updated&direction=desc"),
+                self._get(client, f"{root}/pulls?state=all&per_page=100&sort=updated&direction=desc"),
                 self._get(client, f"{root}/branches?per_page=100"),
                 self._get(client, f"{root}/tags?per_page=100"),
             )
@@ -127,7 +128,13 @@ class GitHubAggregator:
                 detail, reviews, checks, commits = (result[0] for result in results)
                 return normalize_pull(detail, reviews, checks.get("check_runs", []), commits)
 
-            pulls = await asyncio.gather(*(enrich(item) for item in pull_list))
+            open_pull_list = [item for item in pull_list if item.get("state") == "open"]
+            open_pulls = await asyncio.gather(*(enrich(item) for item in open_pull_list))
+            enriched_by_number = {pull["number"]: pull for pull in open_pulls}
+            pulls = [
+                enriched_by_number.get(item["number"]) or normalize_pull(item, [], [], [])
+                for item in pull_list
+            ]
             main_commits_raw, rem, lim = await self._get(client, f"{root}/commits?sha={quote(default_branch, safe='')}&per_page=100")
             if rem is not None:
                 rate_values.append(rem)
@@ -171,11 +178,13 @@ class GitHubAggregator:
             ordered_commits[0]["sha"] if ordered_commits else None,
         )
 
+        pull_relations = derive_pull_relations(pulls)
         snapshot = {
             "repository": repo,
             "defaultBranch": default_branch,
             "headSha": head_sha,
             "pulls": pulls,
+            "pullRelations": pull_relations,
             "commits": ordered_commits,
             "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "rateLimit": {
@@ -187,6 +196,63 @@ class GitHubAggregator:
         }
         self.cache.set(repo, snapshot)
         return snapshot
+
+    async def pull_detail(self, repo: str, number: int) -> dict[str, Any]:
+        if repo not in configured_repositories():
+            raise ValueError("Repository is not configured")
+        if number <= 0:
+            raise ValueError("Invalid pull request number")
+        owner, name = repo.split("/", 1)
+        root = f"/repos/{owner}/{name}"
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            detail, _, _ = await self._get(client, f"{root}/pulls/{number}")
+            head_sha = ((detail.get("head") or {}).get("sha") or "").strip()
+            paths = [
+                f"{root}/issues/{number}/comments?per_page=100",
+                f"{root}/pulls/{number}/comments?per_page=100",
+                f"{root}/pulls/{number}/reviews?per_page=100",
+                f"{root}/pulls/{number}/commits?per_page=100",
+                f"{root}/issues/{number}/timeline?per_page=100",
+            ]
+            results = await asyncio.gather(*(self._get(client, path) for path in paths), return_exceptions=True)
+
+            def payload(index: int) -> Any:
+                result = results[index]
+                return [] if isinstance(result, Exception) else result[0]
+
+            issue_comments = payload(0)
+            review_comments = payload(1)
+            reviews = payload(2)
+            commits = payload(3)
+            timeline = payload(4)
+            checks: list[dict[str, Any]] = []
+            if head_sha:
+                try:
+                    check_payload, _, _ = await self._get(client, f"{root}/commits/{head_sha}/check-runs?per_page=100")
+                    checks = check_payload.get("check_runs", []) if isinstance(check_payload, dict) else []
+                except RuntimeError:
+                    checks = []
+
+        normalized = normalize_pull(detail, reviews if isinstance(reviews, list) else [], checks, commits if isinstance(commits, list) else [])
+        normalized.pop("_commits", None)
+        return {
+            **normalized,
+            "body": detail.get("body") or "",
+            "comments": [normalize_issue_comment(item) for item in issue_comments if isinstance(item, dict)],
+            "reviewComments": [normalize_review_comment(item) for item in review_comments if isinstance(item, dict)],
+            "reviews": [normalize_review(item) for item in reviews if isinstance(item, dict)],
+            "commits": [normalize_pr_commit(item) for item in commits if isinstance(item, dict)],
+            "events": normalize_pull_events(timeline if isinstance(timeline, list) else []),
+            "checks": [normalize_check(item) for item in checks if isinstance(item, dict)],
+            "stats": {
+                "commits": detail.get("commits", len(commits) if isinstance(commits, list) else 0),
+                "additions": detail.get("additions", 0),
+                "deletions": detail.get("deletions", 0),
+                "changedFiles": detail.get("changed_files", 0),
+                "comments": detail.get("comments", len(issue_comments) if isinstance(issue_comments, list) else 0),
+                "reviewComments": detail.get("review_comments", len(review_comments) if isinstance(review_comments, list) else 0),
+            },
+        }
 
     async def commit_detail(self, repo: str, sha: str) -> dict[str, Any]:
         if repo not in configured_repositories():
@@ -293,20 +359,29 @@ def topological_date_order(commits_by_sha: dict[str, dict[str, Any]]) -> list[di
 
 
 def normalize_pull(detail: dict[str, Any], reviews: list[dict[str, Any]], checks: list[dict[str, Any]], commits: list[dict[str, Any]]) -> dict[str, Any]:
+    merged_at = detail.get("merged_at")
+    lifecycle = "merged" if merged_at else ("closed" if detail.get("state") == "closed" else "open")
     return {
         "number": detail["number"],
         "title": detail.get("title", ""),
         "state": detail.get("state", "open"),
+        "lifecycle": lifecycle,
         "url": detail.get("html_url", ""),
+        "body": detail.get("body") or "",
         "author": (detail.get("user") or {}).get("login", "unknown"),
         "base": (detail.get("base") or {}).get("ref", "main"),
+        "baseSha": (detail.get("base") or {}).get("sha", ""),
         "head": (detail.get("head") or {}).get("ref", "unknown"),
         "headSha": (detail.get("head") or {}).get("sha", ""),
+        "mergeCommitSha": detail.get("merge_commit_sha"),
         "draft": bool(detail.get("draft")),
         "mergeable": detail.get("mergeable"),
         "mergeableState": detail.get("mergeable_state"),
         "createdAt": detail.get("created_at"),
         "updatedAt": detail.get("updated_at"),
+        "closedAt": detail.get("closed_at"),
+        "mergedAt": merged_at,
+        "commentsCount": detail.get("comments", 0),
         "requestedReviewers": [item.get("login", "unknown") for item in detail.get("requested_reviewers", [])],
         "labels": [item.get("name", "") for item in detail.get("labels", [])],
         "commitCount": len(commits),
@@ -331,6 +406,120 @@ def normalize_pull(detail: dict[str, Any], reviews: list[dict[str, Any]], checks
         ],
         "_commits": commits,
     }
+
+
+def derive_pull_relations(pulls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_number = {pull["number"]: pull for pull in pulls}
+    by_head = {pull.get("head"): pull for pull in pulls if pull.get("head")}
+    by_head_sha = {pull.get("headSha"): pull for pull in pulls if pull.get("headSha")}
+    edges: dict[tuple[int, int], dict[str, Any]] = {}
+
+    def add(source: int, target: int, kind: str, reason: str) -> None:
+        if source == target or source not in by_number or target not in by_number:
+            return
+        key = (source, target)
+        current = edges.get(key)
+        if current is None or current["kind"] == "mentioned":
+            edges[key] = {"source": source, "target": target, "kind": kind, "reason": reason}
+
+    dependency_pattern = re.compile(
+        r"(?:depends?\s+on|blocked\s+by|stacked\s+on|based\s+on|after|depends-on|requires?)\s+(?:pr\s*)?#(\d+)",
+        re.IGNORECASE,
+    )
+    for pull in pulls:
+        upstream = by_head.get(pull.get("base"))
+        if upstream:
+            add(upstream["number"], pull["number"], "stacked", f"{pull.get('base')} is PR #{upstream['number']} head")
+        upstream_sha = by_head_sha.get(pull.get("baseSha"))
+        if upstream_sha:
+            add(upstream_sha["number"], pull["number"], "stacked", "base SHA matches upstream PR head")
+        text = f"{pull.get('title', '')}\n{pull.get('body', '')}"
+        for match in dependency_pattern.finditer(text):
+            dependency = int(match.group(1))
+            add(dependency, pull["number"], "mentioned", f"dependency reference to #{dependency}")
+    return sorted(edges.values(), key=lambda edge: (edge["source"], edge["target"]))
+
+
+def normalize_check(check: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": check.get("name", "check"),
+        "status": check.get("status", "queued"),
+        "conclusion": check.get("conclusion"),
+        "url": check.get("html_url") or check.get("details_url"),
+        "startedAt": check.get("started_at"),
+        "completedAt": check.get("completed_at"),
+    }
+
+
+def normalize_review(review: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": review.get("id"),
+        "user": (review.get("user") or {}).get("login", "unknown"),
+        "state": review.get("state", "COMMENTED"),
+        "body": review.get("body") or "",
+        "submittedAt": review.get("submitted_at"),
+        "commitId": review.get("commit_id"),
+        "url": review.get("html_url"),
+    }
+
+
+def normalize_issue_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": comment.get("id"),
+        "user": (comment.get("user") or {}).get("login", "unknown"),
+        "body": comment.get("body") or "",
+        "createdAt": comment.get("created_at"),
+        "updatedAt": comment.get("updated_at"),
+        "url": comment.get("html_url"),
+    }
+
+
+def normalize_review_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **normalize_issue_comment(comment),
+        "path": comment.get("path"),
+        "line": comment.get("line") or comment.get("original_line"),
+        "side": comment.get("side"),
+        "commitId": comment.get("commit_id"),
+        "diffHunk": comment.get("diff_hunk") or "",
+    }
+
+
+def normalize_pr_commit(commit: dict[str, Any]) -> dict[str, Any]:
+    data = commit.get("commit") or {}
+    author = data.get("author") or {}
+    return {
+        "sha": commit.get("sha", ""),
+        "message": data.get("message") or "Commit",
+        "author": author.get("name") or (commit.get("author") or {}).get("login", "unknown"),
+        "timestamp": author.get("date"),
+        "url": commit.get("html_url"),
+        "parents": [item.get("sha", "") for item in commit.get("parents", []) if item.get("sha")],
+    }
+
+
+def normalize_pull_events(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    useful = {
+        "merged", "closed", "reopened", "head_ref_force_pushed", "ready_for_review",
+        "convert_to_draft", "base_ref_changed", "head_ref_deleted", "head_ref_restored",
+        "renamed", "labeled", "unlabeled", "review_requested", "review_request_removed",
+    }
+    events: list[dict[str, Any]] = []
+    for item in timeline:
+        event = item.get("event")
+        if event not in useful:
+            continue
+        events.append({
+            "id": item.get("id") or f"{event}-{item.get('created_at')}",
+            "event": event,
+            "createdAt": item.get("created_at"),
+            "actor": (item.get("actor") or {}).get("login", "unknown"),
+            "commitId": item.get("commit_id") or item.get("sha"),
+            "label": (item.get("label") or {}).get("name"),
+            "requestedReviewer": (item.get("requested_reviewer") or {}).get("login"),
+            "rename": item.get("rename"),
+        })
+    return events
 
 
 def normalize_commit(commit: dict[str, Any], branch: str, pr_number: int | None = None) -> dict[str, Any]:

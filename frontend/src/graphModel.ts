@@ -3,9 +3,12 @@ export const STALE_THRESHOLD_HOURS = 72;
 export type FlowStatus = "READY" | "BLOCKED" | "WAITING" | "NEEDS_REVIEW" | "STALE";
 export type ReviewRecord = { user: string; state: string; body?: string; submittedAt?: string; isBot?: boolean };
 export type CheckRecord = { name: string; status: string; conclusion?: string | null; url?: string };
+export type PullRelation = { source: number; target: number; kind: "stacked" | "mentioned"; reason: string };
 export type PullRequestInput = {
   number: number; title: string; state?: string; url: string; author: string; base: string; head: string; headSha: string;
+  baseSha?: string; body?: string; lifecycle?: "open" | "merged" | "closed"; mergeCommitSha?: string | null;
   draft: boolean; mergeable: boolean | null; mergeableState?: string; createdAt: string; updatedAt: string;
+  closedAt?: string | null; mergedAt?: string | null; commentsCount?: number;
   requestedReviewers?: string[]; labels?: string[]; commitCount?: number; reviews: ReviewRecord[]; checks: CheckRecord[];
 };
 export type PullRequestModel = PullRequestInput & {
@@ -28,10 +31,17 @@ function collectDownstream(start: number, adjacency: Map<number, number[]>) {
   return [...visited];
 }
 
-export function buildPullRequestGraph(pulls: PullRequestInput[], options: { mainBranch?: string; now?: Date; staleThresholdHours?: number } = {}): PullRequestModel[] {
+export function buildPullRequestGraph(pulls: PullRequestInput[], options: { mainBranch?: string; now?: Date; staleThresholdHours?: number; relations?: PullRelation[] } = {}): PullRequestModel[] {
   const mainBranch = options.mainBranch ?? "main"; const now = options.now ?? new Date(); const staleThresholdHours = options.staleThresholdHours ?? STALE_THRESHOLD_HOURS;
   const byHead = new Map(pulls.map((pull) => [pull.head, pull])); const adjacency = new Map<number, number[]>(); const dependencyMap = new Map<number, number[]>();
-  for (const pull of pulls) { const upstream = byHead.get(pull.base); const deps = upstream ? [upstream.number] : []; dependencyMap.set(pull.number, deps); if (upstream) adjacency.set(upstream.number, [...(adjacency.get(upstream.number) ?? []), pull.number]); }
+  const inSet = new Set(pulls.map((pull) => pull.number));
+  for (const pull of pulls) {
+    const upstream = byHead.get(pull.base);
+    const relationDeps = (options.relations ?? []).filter((edge) => edge.target === pull.number && inSet.has(edge.source)).map((edge) => edge.source);
+    const deps = [...new Set([...(upstream ? [upstream.number] : []), ...relationDeps])];
+    dependencyMap.set(pull.number, deps);
+    for (const dependency of deps) adjacency.set(dependency, [...(adjacency.get(dependency) ?? []), pull.number]);
+  }
   return pulls.map((pull) => {
     const human = latestHumanReviewByUser(pull.reviews); const changesRequested = human.filter((review) => review.state.toUpperCase() === "CHANGES_REQUESTED"); const approvalCount = human.filter((review) => review.state.toUpperCase() === "APPROVED").length;
     const dependencies = dependencyMap.get(pull.number) ?? []; const downstream = collectDownstream(pull.number, adjacency); const staleHours = Math.max(0, now.getTime() - new Date(pull.updatedAt).getTime()) / 3_600_000; const stale = staleHours >= staleThresholdHours; const staleDays = Math.floor(staleHours / 24); const blockers: string[] = [];

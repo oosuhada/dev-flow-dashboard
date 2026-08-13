@@ -56,6 +56,17 @@ async def commit(repo: str = Query(...), sha: str = Query(...)) -> dict[str, obj
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/pull")
+@app.get(f"{DASHBOARD_PREFIX}/api/pull")
+async def pull(repo: str = Query(...), number: int = Query(...)) -> dict[str, object]:
+    try:
+        return await aggregator.pull_detail(repo, number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/file")
 @app.get(f"{DASHBOARD_PREFIX}/api/file")
 async def file_content(repo: str = Query(...), sha: str = Query(...), path: str = Query(...)) -> dict[str, object]:

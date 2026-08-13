@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AlertTriangle,
   ChevronRight,
@@ -12,7 +14,9 @@ import {
   FolderOpen,
   GitBranch,
   GitCommit,
+  GitMerge,
   GitPullRequest,
+  MessageSquare,
   RefreshCw,
   Search,
   Tag,
@@ -21,15 +25,18 @@ import {
 import {
   loadCommit,
   loadFile,
+  loadPull,
   loadRepositories,
   loadSnapshot,
   type CommitDetail,
   type CommitFile,
   type CommitRecord,
   type FileContent,
+  type PullDetail,
+  type PullReviewComment,
   type Snapshot,
 } from "./api";
-import { buildPullRequestGraph, rankBottlenecks, type PullRequestModel } from "./graphModel";
+import { buildPullRequestGraph, type PullRelation, type PullRequestInput, type PullRequestModel } from "./graphModel";
 import { GRAPH_PADDING, ROW_HEIGHT, VERTEX_RADIUS } from "./gitgraph/constants";
 import { computeGraphLayout } from "./gitgraph/layout";
 import { buildFileTree, type FileTreeNode } from "./gitgraph/fileTree";
@@ -204,17 +211,145 @@ function CommitInspector({ repo, detail, loading, selectedFile, onFile, fileCont
 function statusLabel(status: PullRequestModel["status"]) { return status === "NEEDS_REVIEW" ? "NEEDS REVIEW" : status; }
 function statusClass(status: PullRequestModel["status"]) { return status.toLowerCase().replace("_", "-"); }
 
-function PullRequestView({ pulls, selected, onSelect }: { pulls: PullRequestModel[]; selected: number | null; onSelect: (value: number) => void }) {
-  const ordered = [...pulls].sort((a, b) => b.bottleneckScore - a.bottleneckScore || b.number - a.number);
-  return <div className="pr-table">
-    <div className="pr-head"><span>Pull request</span><span>Branch</span><span>Review / CI</span><span>Impact</span></div>
-    {ordered.map((pull) => <button key={pull.number} className={selected === pull.number ? "selected" : ""} onClick={() => onSelect(pull.number)}>
-      <div><strong>#{pull.number}</strong><span>{pull.title}</span></div>
-      <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
-      <span className={`pr-status s-${statusClass(pull.status)}`}>{statusLabel(pull.status)}</span>
-      <span>{pull.downstreamCount ? `blocks ${pull.downstreamCount}` : "—"}</span>
-    </button>)}
+function lifecycleLabel(pull: { lifecycle?: "open" | "merged" | "closed"; draft: boolean }) {
+  if (pull.lifecycle === "merged") return "MERGED";
+  if (pull.lifecycle === "closed") return "CLOSED";
+  return pull.draft ? "DRAFT" : "OPEN";
+}
+
+function orderPullsForGraph(pulls: PullRequestInput[], relations: PullRelation[]) {
+  const byNumber = new Map(pulls.map((pull) => [pull.number, pull]));
+  const childCounts = new Map(pulls.map((pull) => [pull.number, 0]));
+  const parents = new Map<number, number[]>();
+  for (const edge of relations) {
+    if (!byNumber.has(edge.source) || !byNumber.has(edge.target)) continue;
+    childCounts.set(edge.source, (childCounts.get(edge.source) ?? 0) + 1);
+    parents.set(edge.target, [...(parents.get(edge.target) ?? []), edge.source]);
+  }
+  const ready = pulls.filter((pull) => (childCounts.get(pull.number) ?? 0) === 0);
+  const ordered: PullRequestInput[] = [];
+  const emitted = new Set<number>();
+  while (ready.length) {
+    ready.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
+    const pull = ready.shift()!;
+    if (emitted.has(pull.number)) continue;
+    emitted.add(pull.number); ordered.push(pull);
+    for (const parent of parents.get(pull.number) ?? []) {
+      childCounts.set(parent, (childCounts.get(parent) ?? 1) - 1);
+      if ((childCounts.get(parent) ?? 0) === 0) ready.push(byNumber.get(parent)!);
+    }
+  }
+  const leftovers = pulls.filter((pull) => !emitted.has(pull.number)).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  return [...ordered, ...leftovers];
+}
+
+function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }: {
+  pulls: PullRequestInput[];
+  relations: PullRelation[];
+  flowByNumber: Map<number, PullRequestModel>;
+  selected: number | null;
+  onSelect: (value: number) => void;
+}) {
+  const ordered = useMemo(() => orderPullsForGraph(pulls, relations), [pulls, relations]);
+  const visibleNumbers = useMemo(() => new Set(ordered.map((pull) => pull.number)), [ordered]);
+  const visibleRelations = useMemo(() => relations.filter((edge) => visibleNumbers.has(edge.source) && visibleNumbers.has(edge.target)), [relations, visibleNumbers]);
+  const pseudoCommits = useMemo<CommitRecord[]>(() => ordered.map((pull) => ({
+    sha: `pr-${pull.number}`,
+    message: pull.title,
+    author: pull.author,
+    email: "",
+    timestamp: pull.updatedAt,
+    parents: visibleRelations.filter((edge) => edge.target === pull.number).map((edge) => `pr-${edge.source}`),
+    branch: pull.head,
+    refs: [],
+  })), [ordered, visibleRelations]);
+  const layout = useMemo(() => computeGraphLayout(pseudoCommits, null), [pseudoCommits]);
+  const strokes = useMemo(() => layout.branches.flatMap((branch) => branchStrokes(branch, false)), [layout]);
+  const width = Math.max(72, graphWidth(layout) + GRAPH_PADDING);
+  const height = Math.max(ROW_HEIGHT, graphHeight(layout));
+  const upstream = new Map<number, number[]>();
+  const downstream = new Map<number, number[]>();
+  for (const edge of visibleRelations) {
+    upstream.set(edge.target, [...(upstream.get(edge.target) ?? []), edge.source]);
+    downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target]);
+  }
+  return <div className="pr-graph-table" data-testid="pr-graph" data-edge-count={visibleRelations.length}>
+    <div className="pr-graph-head" style={{ gridTemplateColumns: `${width}px minmax(360px,1fr) minmax(220px,.55fr) 118px 110px` }}>
+      <span>Graph</span><span>Pull request</span><span>Branch</span><span>State</span><span>Updated</span>
+    </div>
+    <div className="pr-graph-body">
+      <div className="pr-graph-svg" style={{ width }}><svg width={width} height={height} aria-hidden="true">
+        {strokes.map((stroke, index) => <g key={index}><path d={stroke.path} className="git-edge-shadow"/><path d={stroke.path} stroke={laneColor(stroke.colour)} className="git-edge"/></g>)}
+        {ordered.map((pull, index) => {
+          const vertex = layout.vertices[index]; if (!vertex) return null;
+          const color = laneColor(vertex.colour); const active = selected === pull.number;
+          return <g key={pull.number}>{active && <circle cx={laneX(vertex.x)} cy={rowY(vertex.y)} r={VERTEX_RADIUS + 4} fill={color} opacity=".2"/>}<circle cx={laneX(vertex.x)} cy={rowY(vertex.y)} r={VERTEX_RADIUS} fill={color} stroke="#1e1e1e" strokeWidth={active ? 2.5 : 1}/></g>;
+        })}
+      </svg></div>
+      <div className="pr-graph-rows" style={{ marginLeft: width }}>
+        {ordered.map((pull) => {
+          const flow = flowByNumber.get(pull.number);
+          const deps = upstream.get(pull.number) ?? [];
+          const blocks = downstream.get(pull.number) ?? [];
+          return <button key={pull.number} className={`pr-graph-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
+            <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span><span className="pr-title-text">{pull.title}</span>{deps.length > 0 && <span className="relation-chip">after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span className="relation-chip impact">blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}</div>
+            <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
+            <span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}{flow && <small>{statusLabel(flow.status)}</small>}</span>
+            <time>{shortDate(pull.updatedAt)}</time>
+          </button>;
+        })}
+      </div>
+    </div>
   </div>;
+}
+
+function eventText(event: PullDetail["events"][number]) {
+  if (event.event === "merged") return "merged this pull request";
+  if (event.event === "closed") return "closed this pull request";
+  if (event.event === "reopened") return "reopened this pull request";
+  if (event.event === "head_ref_force_pushed") return "force-pushed the head branch";
+  if (event.event === "ready_for_review") return "marked this pull request ready for review";
+  if (event.event === "convert_to_draft") return "converted this pull request to draft";
+  if (event.event === "review_requested") return `requested review${event.requestedReviewer ? ` from ${event.requestedReviewer}` : ""}`;
+  if (event.event === "labeled") return `added label ${event.label ?? ""}`;
+  if (event.event === "unlabeled") return `removed label ${event.label ?? ""}`;
+  return event.event.replaceAll("_", " ");
+}
+
+function PullRequestInspector({ repo, detail, loading, tab, setTab, onClose }: {
+  repo: string; detail: PullDetail | null; loading: boolean; tab: "conversation" | "commits" | "checks";
+  setTab: (tab: "conversation" | "commits" | "checks") => void; onClose: () => void;
+}) {
+  if (loading || !detail) return <aside className="pr-inspector"><div className="inspector-loading">Loading pull request…</div></aside>;
+  const activities = [
+    ...detail.comments.map((item) => ({ kind: "comment" as const, at: item.createdAt ?? "", item })),
+    ...detail.reviewComments.map((item) => ({ kind: "review-comment" as const, at: item.createdAt ?? "", item })),
+    ...detail.reviews.filter((item) => item.body || item.state !== "COMMENTED").map((item) => ({ kind: "review" as const, at: item.submittedAt ?? "", item })),
+    ...detail.events.map((item) => ({ kind: "event" as const, at: item.createdAt ?? "", item })),
+  ].sort((a, b) => new Date(a.at || 0).getTime() - new Date(b.at || 0).getTime());
+  return <aside className="pr-inspector">
+    <div className="inspector-titlebar"><div><GitPullRequest size={14}/><strong>PR #{detail.number}</strong><span>{repo}</span></div><button onClick={onClose} aria-label="Close pull request"><X size={15}/></button></div>
+    <div className="pr-summary">
+      <div className="pr-summary-state"><span className={`lifecycle lifecycle-${detail.lifecycle ?? "open"}`}>{lifecycleLabel(detail)}</span><a href={detail.url} target="_blank" rel="noreferrer">Open on GitHub <ExternalLink size={11}/></a></div>
+      <h2>{detail.title}</h2>
+      <div className="pr-route"><span>{detail.head}</span><GitMerge size={12}/><span>{detail.base}</span></div>
+      <div className="pr-summary-meta"><span>{detail.author}</span><span>{detail.stats.commits} commits</span><span>{detail.stats.changedFiles} files</span><b className="plus">+{detail.stats.additions}</b><b className="minus">−{detail.stats.deletions}</b></div>
+    </div>
+    <div className="pr-inspector-tabs"><button className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}><MessageSquare size={12}/>Conversation</button><button className={tab === "commits" ? "active" : ""} onClick={() => setTab("commits")}><GitCommit size={12}/>Commits <span>{detail.commits.length}</span></button><button className={tab === "checks" ? "active" : ""} onClick={() => setTab("checks")}>Checks <span>{detail.checks.length}</span></button></div>
+    <div className="pr-inspector-body">
+      {tab === "conversation" && <>
+        <article className="pr-body-card"><header><strong>{detail.author}</strong><span>opened this pull request · {shortDate(detail.createdAt)}</span></header><div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.body || "No description provided."}</ReactMarkdown></div></article>
+        <div className="activity-list">{activities.map((activity, index) => {
+          if (activity.kind === "event") return <div key={`event-${activity.item.id}-${index}`} className="activity-event"><span className="activity-dot"/><strong>{activity.item.actor}</strong><span>{eventText(activity.item)}</span><time>{activity.at ? shortDate(activity.at) : ""}</time></div>;
+          if (activity.kind === "review") return <article key={`review-${activity.item.id}-${index}`} className="activity-card review-card"><header><strong>{activity.item.user}</strong><span className={`review-state review-${activity.item.state.toLowerCase()}`}>{activity.item.state.replaceAll("_", " ")}</span><time>{activity.at ? shortDate(activity.at) : ""}</time></header>{activity.item.body && <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.item.body}</ReactMarkdown></div>}</article>;
+          const comment = activity.item as PullReviewComment;
+          return <article key={`${activity.kind}-${comment.id}-${index}`} className="activity-card"><header><strong>{comment.user}</strong>{activity.kind === "review-comment" && <span className="path-chip">{comment.path}{comment.line ? `:${comment.line}` : ""}</span>}<time>{activity.at ? shortDate(activity.at) : ""}</time></header><div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{comment.body}</ReactMarkdown></div>{activity.kind === "review-comment" && comment.diffHunk && <code className="diff-hunk">{comment.diffHunk.split("\n").slice(0, 5).join("\n")}</code>}</article>;
+        })}</div>
+      </>}
+      {tab === "commits" && <div className="pr-commit-list">{detail.commits.map((commit) => <a key={commit.sha} href={commit.url ?? undefined} target="_blank" rel="noreferrer"><span className="commit-node-mini"/><div><strong>{commit.message.split("\n", 1)[0]}</strong><span>{commit.author} · {commit.timestamp ? shortDate(commit.timestamp) : ""}</span></div><code>{commit.sha.slice(0, 7)}</code></a>)}</div>}
+      {tab === "checks" && <div className="pr-check-list">{detail.checks.length ? detail.checks.map((check, index) => <a key={`${check.name}-${index}`} href={check.url ?? undefined} target="_blank" rel="noreferrer"><span className={`check-dot check-${check.conclusion ?? check.status}`}/><div><strong>{check.name}</strong><span>{check.status === "completed" ? check.conclusion ?? "completed" : check.status}</span></div></a>) : <div className="no-preview">No check runs reported for this pull request.</div>}</div>}
+    </div>
+  </aside>;
 }
 
 export function App() {
@@ -233,6 +368,10 @@ export function App() {
   const [fileLoading, setFileLoading] = useState(false);
   const [fileMode, setFileMode] = useState<"diff" | "file">("diff");
   const [selectedPull, setSelectedPull] = useState<number | null>(null);
+  const [pullDetail, setPullDetail] = useState<PullDetail | null>(null);
+  const [pullLoading, setPullLoading] = useState(false);
+  const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
+  const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
 
   useEffect(() => { loadRepositories().then((items) => { setRepos(items); setRepo((current) => current || items[0] || ""); }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
   async function refresh(target: string, force = false) {
@@ -242,7 +381,7 @@ export function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load GitHub data"); }
     finally { setLoading(false); }
   }
-  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setSelectedFile(null); void refresh(repo); } }, [repo]);
+  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); void refresh(repo); } }, [repo]);
 
   async function inspectCommit(commit: CommitRecord) {
     setSelectedCommit(commit.sha); setCommitLoading(true); setCommitDetail(null); setSelectedFile(null); setFileContent(null); setFileMode("diff");
@@ -258,6 +397,13 @@ export function App() {
     setSelectedFile(file.filename); setFileContent(null); setFileMode("diff");
   }
 
+  async function inspectPull(number: number) {
+    setSelectedPull(number); setPullLoading(true); setPullDetail(null); setPullTab("conversation");
+    try { setPullDetail(await loadPull(repo, number)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load pull request"); }
+    finally { setPullLoading(false); }
+  }
+
   useEffect(() => {
     if (fileMode !== "file" || !selectedCommit || !selectedFile || !commitDetail) return;
     const currentFile = commitDetail.files.find((file) => file.filename === selectedFile);
@@ -270,26 +416,45 @@ export function App() {
     return () => { cancelled = true; };
   }, [fileMode, repo, selectedCommit, selectedFile, commitDetail]);
 
-  const pulls = useMemo(() => snapshot ? buildPullRequestGraph(snapshot.pulls) : [], [snapshot]);
-  const bottlenecks = useMemo(() => rankBottlenecks(pulls).slice(0, 4), [pulls]);
+  const openPullModels = useMemo(() => snapshot ? buildPullRequestGraph(
+    snapshot.pulls.filter((pull) => (pull.lifecycle ?? "open") === "open"),
+    { mainBranch: snapshot.defaultBranch, relations: snapshot.pullRelations },
+  ) : [], [snapshot]);
+  const flowByNumber = useMemo(() => new Map(openPullModels.map((pull) => [pull.number, pull])), [openPullModels]);
+  const pullCounts = useMemo(() => {
+    const pulls = snapshot?.pulls ?? [];
+    return {
+      all: pulls.length,
+      open: pulls.filter((pull) => (pull.lifecycle ?? "open") === "open").length,
+      merged: pulls.filter((pull) => pull.lifecycle === "merged").length,
+      closed: pulls.filter((pull) => pull.lifecycle === "closed").length,
+    };
+  }, [snapshot]);
+  const visiblePulls = useMemo(() => (snapshot?.pulls ?? []).filter((pull) => {
+    const stateMatch = pullFilter === "all" || (pull.lifecycle ?? "open") === pullFilter;
+    const searchMatch = !query || `${pull.number} ${pull.title} ${pull.author} ${pull.head} ${pull.base}`.toLowerCase().includes(query.toLowerCase());
+    return stateMatch && searchMatch;
+  }), [snapshot, pullFilter, query]);
 
   return <main className="app-shell" data-testid="dashboard-root">
     <header className="app-titlebar">
       <div className="app-mark"><GitBranch size={15}/><strong>Dev Flow</strong></div>
       <div className="repo-picker"><select aria-label="Repository" value={repo} onChange={(event) => setRepo(event.target.value)}>{repos.map((item) => <option key={item}>{item}</option>)}</select></div>
-      <div className="title-actions"><span className="live-indicator"><i/>live</span><span>{snapshot ? `${snapshot.commits.length} commits · ${snapshot.pulls.length} open PRs` : "loading"}</span><button onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
+      <div className="title-actions"><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
     </header>
 
     <div className="app-toolbar">
-      <div className="tabs"><button className={tab === "commits" ? "active" : ""} onClick={() => setTab("commits")}><GitCommit size={13}/> Commit Graph</button><button className={tab === "pulls" ? "active" : ""} onClick={() => setTab("pulls")}><GitPullRequest size={13}/> Pull Requests <span>{pulls.length}</span></button></div>
+      <div className="tabs"><button className={tab === "commits" ? "active" : ""} onClick={() => setTab("commits")}><GitCommit size={13}/> Commit Graph</button><button className={tab === "pulls" ? "active" : ""} onClick={() => setTab("pulls")}><GitPullRequest size={13}/> Pull Requests <span>{pullCounts.all}</span></button></div>
       <label className="graph-search"><Search size={13}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "commits" ? "Filter commits, branches, authors…" : "Filter pull requests…"}/></label>
     </div>
 
+    {tab === "pulls" && <div className="pr-filterbar">{(["all", "open", "merged", "closed"] as const).map((state) => <button key={state} className={pullFilter === state ? "active" : ""} onClick={() => setPullFilter(state)}>{state[0].toUpperCase() + state.slice(1)} <span>{pullCounts[state]}</span></button>)}</div>}
+
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
-    <section className={`workbench ${selectedCommit && tab === "commits" ? "with-inspector" : ""}`}>
+    <section className={`workbench ${(selectedCommit && tab === "commits") || (selectedPull && tab === "pulls") ? "with-inspector" : ""}`}>
       <div className="graph-pane">
-        {loading && !snapshot ? <div className="center-message">Reading GitHub history…</div> : null}
+        {loading && !snapshot ? <div className="center-message">Loading…</div> : null}
         {snapshot && tab === "commits" && <CommitGraph
           commits={snapshot.commits}
           headSha={snapshot.headSha}
@@ -298,10 +463,12 @@ export function App() {
           onSelect={(commit) => void inspectCommit(commit)}
           query={query}
         />}
-        {snapshot && tab === "pulls" && <PullRequestView
-          pulls={pulls.filter((pull) => !query || `${pull.number} ${pull.title} ${pull.author} ${pull.head}`.toLowerCase().includes(query.toLowerCase()))}
+        {snapshot && tab === "pulls" && <PullRequestGraph
+          pulls={visiblePulls}
+          relations={snapshot.pullRelations}
+          flowByNumber={flowByNumber}
           selected={selectedPull}
-          onSelect={setSelectedPull}
+          onSelect={(number) => void inspectPull(number)}
         />}
       </div>
       {tab === "commits" && selectedCommit && <CommitInspector
@@ -316,12 +483,14 @@ export function App() {
         setMode={setFileMode}
         onClose={() => { setSelectedCommit(null); setCommitDetail(null); }}
       />}
+      {tab === "pulls" && selectedPull && <PullRequestInspector
+        repo={repo}
+        detail={pullDetail}
+        loading={pullLoading}
+        tab={pullTab}
+        setTab={setPullTab}
+        onClose={() => { setSelectedPull(null); setPullDetail(null); }}
+      />}
     </section>
-
-    <footer className="statusbar">
-      <span><GitBranch size={11}/>{repo}</span>
-      <span>{snapshot ? `${snapshot.authentication} GitHub · cache ${snapshot.cache.hit ? "hit" : "miss"} · ${snapshot.rateLimit.remaining ?? "?"}/${snapshot.rateLimit.limit ?? "?"}` : "connecting"}</span>
-      {bottlenecks[0] && <button onClick={() => { setTab("pulls"); setSelectedPull(bottlenecks[0].number); }}>bottleneck: #{bottlenecks[0].number} · blocks {bottlenecks[0].downstreamCount}</button>}
-    </footer>
   </main>;
 }
