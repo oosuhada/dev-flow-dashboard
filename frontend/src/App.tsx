@@ -86,11 +86,23 @@ function relativeAge(value: string) {
   return `${Math.floor(days / 7)}w`;
 }
 
-function activityBucket(value: string): "1h" | "1d" | "1w" | "older" {
+const ACTIVITY_BUCKET_ORDER = ["1h", "2h", "3h", "6h", "12h", "1d", "2d", "3d", "1w", "older"] as const;
+type ActivityBucket = typeof ACTIVITY_BUCKET_ORDER[number];
+
+function activityBucket(value: string): ActivityBucket | null {
   const ageMs = Math.max(0, Date.now() - new Date(value).getTime());
-  if (ageMs <= 60 * 60 * 1000) return "1h";
-  if (ageMs <= 24 * 60 * 60 * 1000) return "1d";
-  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return "1w";
+  const hour = 60 * 60 * 1000;
+  const day = 24 * hour;
+  if (ageMs < hour) return null;
+  if (ageMs < 2 * hour) return "1h";
+  if (ageMs < 3 * hour) return "2h";
+  if (ageMs < 6 * hour) return "3h";
+  if (ageMs < 12 * hour) return "6h";
+  if (ageMs < day) return "12h";
+  if (ageMs < 2 * day) return "1d";
+  if (ageMs < 3 * day) return "2d";
+  if (ageMs < 7 * day) return "3d";
+  if (ageMs < 14 * day) return "1w";
   return "older";
 }
 
@@ -549,13 +561,21 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [selectedSnapshot, setSelectedSnapshot] = useState<AIProjectState | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [collapsedBuckets, setCollapsedBuckets] = useState<Set<string>>(() => new Set(["older"]));
 
   const groupedActivity = useMemo(() => {
-    const groups: Record<"1h" | "1d" | "1w" | "older", ActivityItem[]> = { "1h": [], "1d": [], "1w": [], older: [] };
-    for (const item of activity) groups[activityBucket(item.createdAt)].push(item);
+    const groups = ACTIVITY_BUCKET_ORDER.reduce((result, bucket) => {
+      result[bucket] = [];
+      return result;
+    }, {} as Record<ActivityBucket, ActivityItem[]>);
+    for (const item of activity) {
+      const bucket = activityBucket(item.createdAt);
+      if (bucket) groups[bucket].push(item);
+    }
     return groups;
   }, [activity]);
+  const recentActivity = useMemo(() => activity.filter((item) => activityBucket(item.createdAt) === null), [activity]);
 
   function selectTab(value: "pm" | "chat" | "activity") {
     setTab(value);
@@ -582,6 +602,13 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     try { setSelectedSnapshot(await loadAIProjectHistoryDetail(id)); }
     catch { setSelectedSnapshotId(null); setSelectedSnapshot(null); }
     finally { setHistoryLoading(false); }
+  }
+
+  function activityRow(item: ActivityItem) {
+    return <button key={item.id} className={`activity-item source-${item.source}`} onClick={() => item.number ? onSelectPull(item.repository, item.number) : undefined} title={new Date(item.createdAt).toLocaleString()}>
+      <span className="activity-source-dot"/>
+      <div><header><strong>{item.title}</strong><time>{relativeAge(item.createdAt)}</time></header><p>{item.summary || `${item.event}${item.action ? ` · ${item.action}` : ""}`}</p><footer><span>{item.repository.split("/").at(-1)}</span>{item.actor && <span>@{item.actor}</span>}<time>{shortDate(item.createdAt)}</time></footer></div>
+    </button>;
   }
 
   function toggleBucket(bucket: string) {
@@ -617,20 +644,11 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
       <div><Sparkles size={13}/><strong>AI Project Manager</strong>{loading && <small>re-evaluating…</small>}</div>
       <button onClick={onRefresh} title="Re-evaluate now"><RefreshCw size={12}/></button>
     </header>
-    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => selectTab("pm")}>PM</button><button className={tab === "chat" ? "active" : ""} onClick={() => selectTab("chat")}>Chat</button><button className={tab === "activity" ? "active" : ""} onClick={() => selectTab("activity")}><Bell size={11}/> Activity {unreadCount > 0 && <span className="activity-unread">{unreadCount > 99 ? "99+" : unreadCount}</span>}</button></nav>
+    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => selectTab("pm")}>AI PM</button><button className={tab === "chat" ? "active" : ""} onClick={() => selectTab("chat")}>Chat</button><button className={tab === "activity" ? "active" : ""} onClick={() => selectTab("activity")}><Bell size={11}/> Activity {unreadCount > 0 && <span className="activity-unread">{unreadCount > 99 ? "99+" : unreadCount}</span>}</button></nav>
     {tab === "pm" ? <div className="pm-timeline">
-      <section className="pm-history-nav">
-        <div className="pm-history-title"><strong>Judgement history</strong><span>{history.length} snapshots</span>{historyLoading && <small>loading…</small>}</div>
-        <div className="pm-history-rail">
-          <button className={`pm-history-point live ${selectedSnapshotId === null ? "active" : ""}`} onClick={() => void selectSnapshot(null)}><span>LIVE</span>{state?.generatedAt && <time>{shortTime(state.generatedAt)}</time>}</button>
-          {historicalItems.map((item) => <button key={item.id} className={`pm-history-point ${selectedSnapshotId === item.id ? "active" : ""}`} onClick={() => void selectSnapshot(item.id)} title={item.headline ?? undefined}>
-            <span>{shortTime(item.createdAt)}</span><time>{shortDate(item.createdAt)}</time><small>{item.projectHealth ?? "PM"}{item.currentStep?.number ? ` · Step ${item.currentStep.number}` : ""}</small>
-          </button>)}
-        </div>
-      </section>
       {selectedSnapshotId !== null && <div className="pm-history-mode"><span>Historical judgement · snapshot #{selectedSnapshotId}</span><button onClick={() => void selectSnapshot(null)}>Back to live</button></div>}
       <section className="pm-current">
-        <div className="pm-current-head"><strong>{selectedSnapshotId === null ? "Live judgement" : "Saved judgement"}</strong>{judgedAt && <time>{shortDate(judgedAt)}</time>}</div>
+        <div className="pm-current-head"><div><strong>{selectedSnapshotId === null ? "Live judgement" : "Saved judgement"}</strong>{judgedAt && <time>{shortDate(judgedAt)}</time>}</div><button className="pm-history-trigger" onClick={() => setHistoryOpen(true)}>Judgement history <span>{history.length}</span></button></div>
         {selectedSnapshotId !== null && displayState === null ? <div className="pm-snapshot-loading">Loading saved judgement…</div> : <div className="pm-current-body">
           <div className="pm-status-row"><span className={`pm-health health-${(displayState?.projectHealth ?? "loading").toLowerCase()}`}>{displayState?.projectHealth ?? "ANALYZING"}</span>{displayState?.currentStep && <span className="pm-step">Step {displayState.currentStep.number} · {displayState.currentStep.name}</span>}</div>
           <div className="ai-headline"><span>{judgedAt ? shortTime(judgedAt) : "--:--"}</span><strong>{displayState?.headline || "Project Manager가 현재 상태를 읽는 중입니다…"}</strong></div>
@@ -643,10 +661,22 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
             {action.nextHandoff && <div className="pm-handoff"><span>Handoff</span>{action.nextHandoff}</div>}
             {action.relatedWork?.length ? <div className="pm-related">{action.relatedWork.map((work) => <button key={`${work.repository}-${work.pr}`} onClick={() => onSelectPull(work.repository, work.pr)}>{work.repository === currentRepo ? "PR" : work.repository.split("/").at(-1)} #{work.pr}</button>)}</div> : null}
           </article>)}</section>
-          {(displayState?.antiPatternAlerts ?? []).length > 0 && <section className="pm-alerts"><h3>PM warnings</h3>{displayState?.antiPatternAlerts?.slice(0, 4).map((alert, index) => <article key={`${alert.title}-${index}`} className={`pm-alert severity-${alert.severity}`}><header><AlertTriangle size={11}/><strong>{alert.title}</strong></header><p>{alert.reason}</p><div><span>STOP</span>{alert.stopDoing}</div><div><span>DO</span>{alert.doInstead}</div></article>)}</section>}
+          {(displayState?.antiPatternAlerts ?? []).length > 0 && <section className="pm-alerts"><h3>AI PM warnings</h3>{displayState?.antiPatternAlerts?.slice(0, 4).map((alert, index) => <article key={`${alert.title}-${index}`} className={`pm-alert severity-${alert.severity}`}><header><AlertTriangle size={11}/><strong>{alert.title}</strong></header><p>{alert.reason}</p><div><span>Don't</span>{alert.stopDoing}</div><div><span>Do</span>{alert.doInstead}</div></article>)}</section>}
           <section className="pm-queue"><h3>PR queue</h3>{(displayState?.prPriorities ?? []).slice(0, 10).map((item) => <button key={`${item.repository}-${item.number}`} onClick={() => onSelectPull(item.repository, item.number)}><span className="ai-rank">{item.rank}</span><strong>{item.repository.split("/").at(-1)} #{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><p>{item.nextAction}</p></button>)}</section>
         </div>}
       </section>
+      {historyOpen && <div className="pm-history-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setHistoryOpen(false); }}>
+        <section className="pm-history-modal" role="dialog" aria-modal="true" aria-label="Judgement history">
+          <header><div><strong>Judgement history</strong><span>{history.length} saved judgements</span></div><button onClick={() => setHistoryOpen(false)} aria-label="Close judgement history"><X size={14}/></button></header>
+          <div className="pm-history-modal-body">
+            <button className={`pm-history-row live ${selectedSnapshotId === null ? "active" : ""}`} onClick={() => { void selectSnapshot(null); setHistoryOpen(false); }}><div><strong>LIVE</strong><span>Current AI PM judgement</span></div>{state?.generatedAt && <time>{shortDate(state.generatedAt)}</time>}</button>
+            {historyLoading && historicalItems.length === 0 && <div className="pm-history-empty">Loading saved judgements…</div>}
+            {historicalItems.map((item) => <button key={item.id} className={`pm-history-row ${selectedSnapshotId === item.id ? "active" : ""}`} onClick={() => { void selectSnapshot(item.id); setHistoryOpen(false); }}>
+              <div><strong>{shortTime(item.createdAt)}</strong><span>{item.headline || "Saved AI PM judgement"}</span><small>{item.projectHealth ?? "AI PM"}{item.currentStep?.number ? ` · Step ${item.currentStep.number}` : ""}</small></div><time>{shortDate(item.createdAt)}</time>
+            </button>)}
+          </div>
+        </section>
+      </div>}
     </div> : tab === "chat" ? <div className="ai-chat">
       <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={18}/><strong>프로젝트 맥락을 기억하고 있습니다.</strong><span>다음 작업, 병목, 팀원별 역할, PR 우선순위를 물어보세요.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>)}{chatLoading && <div className="ai-chat-thinking">Gemini가 현재 PM 상태를 확인하는 중…</div>}</div>
       {suggestions.length > 0 && <div className="ai-chat-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void sendChat(suggestion)}>{suggestion}</button>)}</div>}
@@ -654,17 +684,15 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     </div> : <div className="activity-inbox">
       <div className="activity-toolbar"><div><Bell size={12}/><strong>Live activity</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh activity"><RefreshCw size={11}/></button></div>
       {activity.length === 0 && <div className="activity-empty">GitHub 변화가 들어오면 여기에 누적됩니다.</div>}
-      {(["1h", "1d", "1w", "older"] as const).map((bucket) => {
+      {recentActivity.length > 0 && <div className="activity-items activity-recent">{recentActivity.map(activityRow)}</div>}
+      {ACTIVITY_BUCKET_ORDER.map((bucket) => {
         const items = groupedActivity[bucket];
         if (items.length === 0) return null;
         const collapsed = collapsedBuckets.has(bucket);
         const label = bucket === "older" ? "Older" : bucket;
         return <section className="activity-group" key={bucket}>
           <button className="activity-group-head" onClick={() => toggleBucket(bucket)}>{collapsed ? <ChevronRight size={12}/> : <ChevronDown size={12}/>}<strong>{label}</strong><span>{items.length}</span></button>
-          {!collapsed && <div className="activity-items">{items.map((item) => <button key={item.id} className={`activity-item source-${item.source}`} onClick={() => item.number ? onSelectPull(item.repository, item.number) : undefined} title={new Date(item.createdAt).toLocaleString()}>
-            <span className="activity-source-dot"/>
-            <div><header><strong>{item.title}</strong><time>{relativeAge(item.createdAt)}</time></header><p>{item.summary || `${item.event}${item.action ? ` · ${item.action}` : ""}`}</p><footer><span>{item.repository.split("/").at(-1)}</span>{item.actor && <span>@{item.actor}</span>}<time>{shortDate(item.createdAt)}</time></footer></div>
-          </button>)}</div>}
+          {!collapsed && <div className="activity-items">{items.map(activityRow)}</div>}
         </section>;
       })}
     </div>}
