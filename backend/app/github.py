@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -40,6 +42,12 @@ class SnapshotCache:
     def __init__(self, ttl_seconds: int | None = None) -> None:
         self.ttl_seconds = ttl_seconds or cache_ttl_seconds()
         self._items: dict[str, CacheEntry] = {}
+        state_root = Path(os.getenv("DEV_FLOW_STATE_DIR", ".state")) / "snapshots"
+        state_root.mkdir(parents=True, exist_ok=True)
+        self.state_root = state_root
+
+    def _path(self, key: str) -> Path:
+        return self.state_root / (key.replace("/", "__") + ".json")
 
     def get(self, key: str) -> dict[str, Any] | None:
         item = self._items.get(key)
@@ -50,9 +58,29 @@ class SnapshotCache:
 
     def set(self, key: str, value: dict[str, Any]) -> None:
         self._items[key] = CacheEntry(time.monotonic() + self.ttl_seconds, value)
+        path = self._path(key)
+        temp = path.with_suffix(".tmp")
+        try:
+            temp.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+            temp.replace(path)
+        except OSError:
+            pass
 
     def clear(self, key: str) -> None:
         self._items.pop(key, None)
+
+    def get_stale(self, key: str) -> dict[str, Any] | None:
+        item = self._items.get(key)
+        if item is not None:
+            return item.value
+        path = self._path(key)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
 
 class GitHubAggregator:
@@ -63,6 +91,15 @@ class GitHubAggregator:
     @property
     def authenticated(self) -> bool:
         return bool(self.token)
+
+    def stale_snapshot(self, repo: str) -> dict[str, Any] | None:
+        cached = self.cache.get_stale(repo)
+        if cached is None:
+            return None
+        return {
+            **cached,
+            "cache": {"hit": True, "ttlSeconds": self.cache.ttl_seconds, "stale": True},
+        }
 
     def _headers(self) -> dict[str, str]:
         headers = {

@@ -58,6 +58,25 @@ class ActivityStore:
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_activity_created_at ON activity(created_at DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_activity_repo ON activity(repository, created_at DESC)")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pm_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at REAL NOT NULL,
+                    generated_at TEXT,
+                    model TEXT,
+                    project_health TEXT,
+                    step_number INTEGER,
+                    step_name TEXT,
+                    headline TEXT,
+                    analysis_sequence INTEGER,
+                    trigger_json TEXT NOT NULL DEFAULT '{}',
+                    state_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_pm_snapshots_created_at ON pm_snapshots(created_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_pm_snapshots_sequence ON pm_snapshots(analysis_sequence DESC)")
 
     def add(
         self,
@@ -189,6 +208,97 @@ class ActivityStore:
                 }
             )
         return result
+
+    def add_pm_snapshot(self, state: dict[str, Any]) -> int:
+        current_step = state.get("currentStep") or {}
+        generated_at = str(state.get("generatedAt") or "") or None
+        created_at = time.time()
+        if generated_at:
+            try:
+                from datetime import datetime
+
+                created_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                pass
+        with self._lock, self._connect() as connection:
+            existing = None
+            if generated_at:
+                existing = connection.execute(
+                    "SELECT id FROM pm_snapshots WHERE generated_at = ? ORDER BY id DESC LIMIT 1",
+                    (generated_at,),
+                ).fetchone()
+            if existing is not None:
+                return int(existing["id"])
+            cursor = connection.execute(
+                """
+                INSERT INTO pm_snapshots (
+                    created_at, generated_at, model, project_health, step_number,
+                    step_name, headline, analysis_sequence, trigger_json, state_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    generated_at,
+                    state.get("model"),
+                    state.get("projectHealth"),
+                    current_step.get("number"),
+                    current_step.get("name"),
+                    _clip(state.get("headline"), 500),
+                    state.get("analysisSequence"),
+                    json.dumps(state.get("trigger") or {}, ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_pm_snapshots(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, created_at, generated_at, model, project_health,
+                       step_number, step_name, headline, analysis_sequence, trigger_json
+                FROM pm_snapshots
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                trigger = json.loads(row["trigger_json"] or "{}")
+            except json.JSONDecodeError:
+                trigger = {}
+            result.append(
+                {
+                    "id": row["id"],
+                    "createdAt": row["generated_at"] or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(row["created_at"])),
+                    "model": row["model"],
+                    "projectHealth": row["project_health"],
+                    "currentStep": {
+                        "number": row["step_number"],
+                        "name": row["step_name"],
+                    } if row["step_number"] is not None or row["step_name"] else None,
+                    "headline": row["headline"],
+                    "analysisSequence": row["analysis_sequence"],
+                    "trigger": trigger,
+                }
+            )
+        return result
+
+    def get_pm_snapshot(self, snapshot_id: int) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT state_json FROM pm_snapshots WHERE id = ?",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["state_json"])
+        except json.JSONDecodeError:
+            return None
 
 
 activity_store = ActivityStore()
