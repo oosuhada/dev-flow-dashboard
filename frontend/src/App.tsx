@@ -88,6 +88,38 @@ function relativeAge(value: string) {
 
 const ACTIVITY_BUCKET_ORDER = ["1h", "2h", "3h", "6h", "12h", "1d", "2d", "3d", "1w", "older"] as const;
 type ActivityBucket = typeof ACTIVITY_BUCKET_ORDER[number];
+const ACTIVITY_CATEGORY_ORDER = ["all", "ai", "pr", "review", "comment", "push", "ci"] as const;
+type ActivityCategory = typeof ACTIVITY_CATEGORY_ORDER[number];
+
+function activityCategory(item: ActivityItem): Exclude<ActivityCategory, "all"> {
+  if (item.source === "ai_pm" || item.event === "ai_project") return "ai";
+  if (item.event === "pull_request_review") return "review";
+  if (item.event === "pull_request_review_comment" || item.event === "issue_comment") return "comment";
+  if (item.event === "push") return "push";
+  if (["check_run", "check_suite", "workflow_run"].includes(item.event)) return "ci";
+  return "pr";
+}
+
+function activityCategoryLabel(category: ActivityCategory) {
+  if (category === "all") return "All";
+  if (category === "ai") return "AI PM";
+  if (category === "pr") return "PR";
+  if (category === "review") return "Review";
+  if (category === "comment") return "Comment";
+  if (category === "push") return "Push";
+  return "CI";
+}
+
+function activityClusterKey(item: ActivityItem) {
+  const category = activityCategory(item);
+  if (category === "ai") return `ai:${item.repository}:${item.title}`;
+  if (category === "push") return `push:${item.repository}:${item.title}`;
+  if (category === "ci") {
+    const workflow = item.title.replace(/^(Check|Workflow) · /, "").replace(/^Check suite updated$/, "check-suite");
+    return `ci:${item.repository}:${item.number ?? "repo"}:${workflow}`;
+  }
+  return `${category}:${item.repository}:${item.number ?? item.title}`;
+}
 
 function activityBucket(value: string): ActivityBucket | null {
   const ageMs = Math.max(0, Date.now() - new Date(value).getTime());
@@ -563,19 +595,35 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [collapsedBuckets, setCollapsedBuckets] = useState<Set<string>>(() => new Set(["older"]));
+  const [activityFilter, setActivityFilter] = useState<ActivityCategory>("all");
+  const [activityRepoFilter, setActivityRepoFilter] = useState("all");
+  const [groupSimilarActivity, setGroupSimilarActivity] = useState(true);
+  const [expandedActivityClusters, setExpandedActivityClusters] = useState<Set<string>>(() => new Set());
+
+  const activityRepositories = useMemo(() => Array.from(new Set(activity.map((item) => item.repository))).sort(), [activity]);
+  const activityCategoryCounts = useMemo(() => {
+    const counts: Record<ActivityCategory, number> = { all: activity.length, ai: 0, pr: 0, review: 0, comment: 0, push: 0, ci: 0 };
+    for (const item of activity) counts[activityCategory(item)] += 1;
+    return counts;
+  }, [activity]);
+  const filteredActivity = useMemo(() => activity.filter((item) => {
+    const categoryMatch = activityFilter === "all" || activityCategory(item) === activityFilter;
+    const repoMatch = activityRepoFilter === "all" || item.repository === activityRepoFilter;
+    return categoryMatch && repoMatch;
+  }), [activity, activityFilter, activityRepoFilter]);
 
   const groupedActivity = useMemo(() => {
     const groups = ACTIVITY_BUCKET_ORDER.reduce((result, bucket) => {
       result[bucket] = [];
       return result;
     }, {} as Record<ActivityBucket, ActivityItem[]>);
-    for (const item of activity) {
+    for (const item of filteredActivity) {
       const bucket = activityBucket(item.createdAt);
       if (bucket) groups[bucket].push(item);
     }
     return groups;
-  }, [activity]);
-  const recentActivity = useMemo(() => activity.filter((item) => activityBucket(item.createdAt) === null), [activity]);
+  }, [filteredActivity]);
+  const recentActivity = useMemo(() => filteredActivity.filter((item) => activityBucket(item.createdAt) === null), [filteredActivity]);
 
   function selectTab(value: "pm" | "chat" | "activity") {
     setTab(value);
@@ -605,10 +653,47 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   }
 
   function activityRow(item: ActivityItem) {
+    const category = activityCategory(item);
     return <button key={item.id} className={`activity-item source-${item.source}`} onClick={() => item.number ? onSelectPull(item.repository, item.number) : undefined} title={new Date(item.createdAt).toLocaleString()}>
       <span className="activity-source-dot"/>
-      <div><header><strong>{item.title}</strong><time>{relativeAge(item.createdAt)}</time></header><p>{item.summary || `${item.event}${item.action ? ` · ${item.action}` : ""}`}</p><footer><span>{item.repository.split("/").at(-1)}</span>{item.actor && <span>@{item.actor}</span>}<time>{shortDate(item.createdAt)}</time></footer></div>
+      <div><header><span className={`activity-kind kind-${category}`}>{activityCategoryLabel(category)}</span><strong>{item.title}</strong><time>{relativeAge(item.createdAt)}</time></header><p>{item.summary || `${item.event}${item.action ? ` · ${item.action}` : ""}`}</p><footer><span>{item.repository.split("/").at(-1)}</span>{item.number && <span>PR #{item.number}</span>}{item.actor && <span>@{item.actor}</span>}<time>{shortDate(item.createdAt)}</time></footer></div>
     </button>;
+  }
+
+  function activityRows(items: ActivityItem[], sectionKey: string) {
+    if (!groupSimilarActivity) return items.map(activityRow);
+    const clusters: Array<{ key: string; items: ActivityItem[] }> = [];
+    const byKey = new Map<string, { key: string; items: ActivityItem[] }>();
+    for (const item of items) {
+      const key = `${sectionKey}:${activityClusterKey(item)}`;
+      let cluster = byKey.get(key);
+      if (!cluster) {
+        cluster = { key, items: [] };
+        byKey.set(key, cluster);
+        clusters.push(cluster);
+      }
+      cluster.items.push(item);
+    }
+    return clusters.map((cluster) => {
+      if (cluster.items.length === 1) return activityRow(cluster.items[0]);
+      const first = cluster.items[0];
+      const category = activityCategory(first);
+      const expanded = expandedActivityClusters.has(cluster.key);
+      return <article className="activity-cluster" key={cluster.key}>
+        <button className="activity-cluster-head" onClick={() => setExpandedActivityClusters((current) => {
+          const next = new Set(current);
+          if (!next.delete(cluster.key)) next.add(cluster.key);
+          return next;
+        })}>
+          <span className={`activity-kind kind-${category}`}>{activityCategoryLabel(category)}</span>
+          <div><strong>{first.number ? `PR #${first.number}` : first.repository.split("/").at(-1)}</strong><span>{first.title}</span></div>
+          <small>{cluster.items.length} updates</small>
+          <time>{relativeAge(first.createdAt)}</time>
+          {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+        </button>
+        {expanded && <div className="activity-cluster-items">{cluster.items.map(activityRow)}</div>}
+      </article>;
+    });
   }
 
   function toggleBucket(bucket: string) {
@@ -683,8 +768,16 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
       <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="그 다음에 뭐할까?" rows={2}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
     </div> : <div className="activity-inbox">
       <div className="activity-toolbar"><div><Bell size={12}/><strong>Live activity</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh activity"><RefreshCw size={11}/></button></div>
+      <div className="activity-filters">
+        <div className="activity-kind-filters">{ACTIVITY_CATEGORY_ORDER.map((category) => <button key={category} className={activityFilter === category ? "active" : ""} onClick={() => setActivityFilter(category)}><span>{activityCategoryLabel(category)}</span><small>{activityCategoryCounts[category]}</small></button>)}</div>
+        <div className="activity-filter-options">
+          <select aria-label="Activity repository" value={activityRepoFilter} onChange={(event) => setActivityRepoFilter(event.target.value)}><option value="all">All repos</option>{activityRepositories.map((repository) => <option value={repository} key={repository}>{repository.split("/").at(-1)}</option>)}</select>
+          <label><input type="checkbox" checked={groupSimilarActivity} onChange={(event) => setGroupSimilarActivity(event.target.checked)}/><span>Group similar</span></label>
+        </div>
+      </div>
       {activity.length === 0 && <div className="activity-empty">GitHub 변화가 들어오면 여기에 누적됩니다.</div>}
-      {recentActivity.length > 0 && <div className="activity-items activity-recent">{recentActivity.map(activityRow)}</div>}
+      {activity.length > 0 && filteredActivity.length === 0 && <div className="activity-empty">선택한 필터에 해당하는 activity가 없습니다.</div>}
+      {recentActivity.length > 0 && <div className="activity-items activity-recent">{activityRows(recentActivity, "recent")}</div>}
       {ACTIVITY_BUCKET_ORDER.map((bucket) => {
         const items = groupedActivity[bucket];
         if (items.length === 0) return null;
@@ -692,7 +785,7 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
         const label = bucket === "older" ? "Older" : bucket;
         return <section className="activity-group" key={bucket}>
           <button className="activity-group-head" onClick={() => toggleBucket(bucket)}>{collapsed ? <ChevronRight size={12}/> : <ChevronDown size={12}/>}<strong>{label}</strong><span>{items.length}</span></button>
-          {!collapsed && <div className="activity-items">{items.map(activityRow)}</div>}
+          {!collapsed && <div className="activity-items">{activityRows(items, bucket)}</div>}
         </section>;
       })}
     </div>}
@@ -786,7 +879,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"commits" | "pulls">("commits");
+  const [tab, setTab] = useState<"commits" | "pulls">("pulls");
   const [query, setQuery] = useState("");
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
@@ -803,7 +896,7 @@ export function App() {
   const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
   const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
   const [pullSort, setPullSort] = useState<PullSort>("ai");
-  const [showPullGraph, setShowPullGraph] = useState(false);
+  const [showPullGraph, setShowPullGraph] = useState(true);
   const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
   const [liveConnected, setLiveConnected] = useState(false);
   const [aiProject, setAIProject] = useState<AIProjectState | null>(null);
