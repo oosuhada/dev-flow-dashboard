@@ -9,13 +9,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: dev-flow-dashboard-macmini
+  group: dev-flow-dashboard-macmini-v2
   cancel-in-progress: true
 
 jobs:
   deploy:
     name: Build and deploy
-    runs-on: [self-hosted, macOS, ARM64, dev-flow-dashboard]
+    runs-on: [self-hosted, macOS, ARM64, dev-flow-dashboard-v2]
     timeout-minutes: 20
 
     steps:
