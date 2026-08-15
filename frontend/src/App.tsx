@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -61,6 +61,7 @@ import { buildFileTree, type FileTreeNode } from "./gitgraph/fileTree";
 import { branchStrokes } from "./gitgraph/strokes";
 import { graphHeight, graphWidth, laneX, rowY } from "./gitgraph/utils";
 import { PRStatusBoard } from "./PRStatusBoard";
+import { buildDashboardPath, parseDashboardRoute, type AIPanelTab } from "./routeState";
 
 const GRAPH_COLORS = [
   "#0085d9", "#d9008f", "#00d90a", "#d98500", "#a300d9", "#ff0000",
@@ -647,19 +648,20 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   </div>;
 }
 
-function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, onRefresh, onSelectPull, onOpenActivity, onMarkActivityRead, onRefreshActivity }: {
+function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, tab, onTabChange, onRefresh, onSelectPull, onOpenActivity, onMarkActivityRead, onRefreshActivity }: {
   state: AIProjectState | null;
   loading: boolean;
   currentRepo: string;
   activity: ActivityItem[];
   unreadCount: number;
+  tab: AIPanelTab;
+  onTabChange: (tab: AIPanelTab) => void;
   onRefresh: () => void;
   onSelectPull: (repository: string, number: number) => void;
   onOpenActivity: (item: ActivityItem) => void;
   onMarkActivityRead: () => void;
   onRefreshActivity: () => void;
 }) {
-  const [tab, setTab] = useState<"pm" | "chat" | "activity">("pm");
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [messages, setMessages] = useState<AIChatMessage[]>([]);
@@ -702,7 +704,7 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   const recentActivity = useMemo(() => filteredActivity.filter((item) => activityBucket(item.createdAt) === null), [filteredActivity]);
 
   function selectTab(value: "pm" | "chat" | "activity") {
-    setTab(value);
+    onTabChange(value);
     if (value === "activity") onMarkActivityRead();
   }
 
@@ -731,7 +733,7 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   function openActivity(item: ActivityItem) {
     const snapshotId = Number(item.metadata?.pmSnapshotId ?? 0);
     if (item.source === "ai_pm" && snapshotId > 0) {
-      setTab("pm");
+      selectTab("pm");
       void selectSnapshot(snapshotId);
       return;
     }
@@ -971,6 +973,10 @@ function PullRequestInspector({ repo, detail, loading, tab, setTab, onClose }: {
 }
 
 export function App() {
+  const initialRoute = parseDashboardRoute(window.location.pathname);
+  const bareDashboardPath = /^\/dev_dashboard\/?$/.test(window.location.pathname);
+  const initialRouteRef = useRef(initialRoute);
+  const deepLinkAppliedRef = useRef(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const saved = window.localStorage.getItem("dev-flow-theme");
     if (saved === "dark" || saved === "light") return saved;
@@ -985,7 +991,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"commits" | "pulls" | "status">("pulls");
+  const [tab, setTab] = useState<"commits" | "pulls" | "status">(initialRoute.tab);
   const [query, setQuery] = useState("");
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
@@ -995,11 +1001,11 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContent | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
-  const [fileMode, setFileMode] = useState<"diff" | "file">("diff");
+  const [fileMode, setFileMode] = useState<"diff" | "file">(initialRoute.commitMode);
   const [selectedPull, setSelectedPull] = useState<number | null>(null);
   const [pullDetail, setPullDetail] = useState<PullDetail | null>(null);
   const [pullLoading, setPullLoading] = useState(false);
-  const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
+  const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">(initialRoute.pullTab);
   const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("open");
   const [pullSort, setPullSort] = useState<PullSort>("ai");
   const [showPullGraph, setShowPullGraph] = useState(true);
@@ -1009,7 +1015,8 @@ export function App() {
   const [aiLoading, setAILoading] = useState(false);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [lastSeenActivityId, setLastSeenActivityId] = useState(() => Number(window.localStorage.getItem("dev-flow-activity-seen")) || 0);
-  const [aiPanelOpen, setAIPanelOpen] = useState(() => window.localStorage.getItem("dev-flow-ai-panel") !== "closed");
+  const [aiPanelOpen, setAIPanelOpen] = useState(() => initialRoute.aiTab !== null || (bareDashboardPath && window.localStorage.getItem("dev-flow-ai-panel") !== "closed"));
+  const [aiTab, setAITab] = useState<AIPanelTab>(initialRoute.aiTab ?? "pm");
   const [aiPanelWidth, setAIPanelWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-ai-width")) || 360);
   const [inspectorWidth, setInspectorWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-inspector-width")) || 520);
   const [prColumnWidths, setPrColumnWidths] = useState<PullColumnWidths>(() => {
@@ -1042,7 +1049,11 @@ export function App() {
     window.localStorage.setItem("dev-flow-density", String(density));
   }, [density]);
 
-  useEffect(() => { loadRepositories().then((items) => { setRepos(items); setRepo((current) => current || items[0] || ""); }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
+  useEffect(() => { loadRepositories().then((items) => {
+    setRepos(items);
+    const requestedRepo = new URLSearchParams(window.location.search).get("repo");
+    setRepo((current) => current || (requestedRepo && items.includes(requestedRepo) ? requestedRepo : items[0] || ""));
+  }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
   async function refresh(target: string, force = false) {
     if (!target) return;
     setLoading(true); setError(null);
@@ -1056,7 +1067,21 @@ export function App() {
     catch { /* AI is advisory; GitHub data remains usable. */ }
     finally { setAILoading(false); }
   }
-  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setCommitAI(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); void refresh(repo); void refreshAI(); } }, [repo]);
+  useEffect(() => {
+    if (!repo) return;
+    setSelectedCommit(null); setCommitDetail(null); setCommitAI(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null);
+    void refresh(repo); void refreshAI();
+    if (deepLinkAppliedRef.current) return;
+    deepLinkAppliedRef.current = true;
+    const route = initialRouteRef.current;
+    if (route.tab === "pulls" && route.pullNumber) {
+      void inspectPull(route.pullNumber, repo);
+      setPullTab(route.pullTab);
+    } else if (route.tab === "commits" && route.commitSha) {
+      void inspectCommit(route.commitSha, repo);
+      setFileMode(route.commitMode);
+    }
+  }, [repo]);
 
   useEffect(() => { window.localStorage.setItem("dev-flow-ai-panel", aiPanelOpen ? "open" : "closed"); }, [aiPanelOpen]);
   useEffect(() => { window.localStorage.setItem("dev-flow-ai-width", String(aiPanelWidth)); }, [aiPanelWidth]);
@@ -1064,6 +1089,22 @@ export function App() {
   useEffect(() => { window.localStorage.setItem("dev-flow-pr-columns", JSON.stringify(prColumnWidths)); }, [prColumnWidths]);
   useEffect(() => { window.localStorage.setItem("dev-flow-commit-columns", JSON.stringify(commitColumnWidths)); }, [commitColumnWidths]);
   useEffect(() => { window.localStorage.setItem("dev-flow-activity-seen", String(lastSeenActivityId)); }, [lastSeenActivityId]);
+
+  useEffect(() => {
+    const initialDeepLink = initialRouteRef.current.pullNumber || initialRouteRef.current.commitSha;
+    if (initialDeepLink && !deepLinkAppliedRef.current) return;
+    const pathname = buildDashboardPath({
+      tab,
+      aiTab: aiPanelOpen ? aiTab : null,
+      pullNumber: tab === "pulls" ? selectedPull : null,
+      pullTab,
+      commitSha: tab === "commits" ? selectedCommit : null,
+      commitMode: fileMode,
+    });
+    if (window.location.pathname !== pathname) {
+      window.history.replaceState(null, "", `${pathname}${window.location.search}${window.location.hash}`);
+    }
+  }, [tab, aiPanelOpen, aiTab, selectedPull, pullTab, selectedCommit, fileMode]);
 
   async function refreshActivity() {
     try { setActivity(await loadActivity()); }
@@ -1279,7 +1320,7 @@ export function App() {
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
     <section className={`workbench ${hasInspector ? "with-inspector" : ""} ${aiPanelOpen ? "with-ai" : ""}`} style={{ gridTemplateColumns: workbenchColumns }}>
-      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} activity={activity} unreadCount={unreadActivityCount} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork} onOpenActivity={openActivityItem} onMarkActivityRead={markActivityRead} onRefreshActivity={() => void refreshActivity()}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
+      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} activity={activity} unreadCount={unreadActivityCount} tab={aiTab} onTabChange={setAITab} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork} onOpenActivity={openActivityItem} onMarkActivityRead={markActivityRead} onRefreshActivity={() => void refreshActivity()}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
       <div className="graph-pane">
         {tab === "status" && <PRStatusBoard query={query}/>}
         {tab !== "status" && loading && !snapshot ? <div className="center-message">Loading…</div> : null}
