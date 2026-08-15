@@ -150,11 +150,11 @@ button { color: inherit; }
 .status-board-meta span { color: #a9bac5; font-family: "SFMono-Regular", Consolas, monospace; }
 .status-board-meta strong { color: #d8e2e8; font-size: var(--density-ui); font-weight: 600; }
 .status-board-meta small { padding: 2px 6px; border: 1px solid #40515e; border-radius: 8px; color: #7fb5d7; font-size: var(--density-small); }
-.status-board-counts { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 7px; margin-top: 10px; }
+.status-board-counts { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); gap: 7px; margin-top: 10px; }
 .status-count { min-width: 0; height: 42px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #343d45; border-radius: 5px; background: #22272d; }
 .status-count span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9eabb4; font-size: var(--density-ui); }
 .status-count strong { color: #e3eaee; font-size: calc(var(--density-title) + 2px); }
-.status-ready { color: #78c894; }.status-review { color: #62b6e8; }.status-blocked { color: #ee7c72; }.status-waiting { color: #d7b56f; }.status-hold { color: #b99ad8; }.status-verified { color: #79c8c0; }
+.status-merged { color: #8ed49d; }.status-ready { color: #78c894; }.status-review { color: #62b6e8; }.status-blocked { color: #ee7c72; }.status-waiting { color: #d7b56f; }.status-hold { color: #b99ad8; }.status-verified { color: #79c8c0; }
 .status-board-plan { display: grid; grid-template-columns: repeat(5, minmax(170px, 1fr)); gap: 7px; margin-top: 10px; }
 .status-board-plan > div { min-width: 0; padding: 9px 10px; border: 1px solid #333d45; border-radius: 5px; background: #20252a; }
 .status-board-plan span { display: block; margin-bottom: 4px; color: #7e8f9a; font-size: var(--density-small); text-transform: uppercase; letter-spacing: .04em; }
