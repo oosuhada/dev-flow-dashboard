@@ -3,11 +3,11 @@ import type { GraphBranch, GraphLine, GraphStroke } from "./types";
 import { laneX, rowY } from "./utils";
 
 type PlacedLine = { x1: number; y1: number; x2: number; y2: number; lockedFirst: boolean };
-function placeLine(line: GraphLine): PlacedLine {
-  return { x1: laneX(line.p1.x), y1: rowY(line.p1.y), x2: laneX(line.p2.x), y2: rowY(line.p2.y), lockedFirst: line.lockedFirst };
+function placeLine(line: GraphLine, rowHeight: number): PlacedLine {
+  return { x1: laneX(line.p1.x), y1: rowY(line.p1.y, rowHeight), x2: laneX(line.p2.x), y2: rowY(line.p2.y, rowHeight), lockedFirst: line.lockedFirst };
 }
-function placeLines(branch: GraphBranch): PlacedLine[] {
-  const lines = branch.lines.map(placeLine);
+function placeLines(branch: GraphBranch, rowHeight: number): PlacedLine[] {
+  const lines = branch.lines.map((line) => placeLine(line, rowHeight));
   for (let i = 0; i < lines.length - 1;) {
     const line = lines[i], next = lines[i + 1];
     const straight = line.x1 === line.x2 && line.x2 === next.x1 && next.x1 === next.x2 && line.y2 === next.y1;
@@ -17,9 +17,9 @@ function placeLines(branch: GraphBranch): PlacedLine[] {
   return lines;
 }
 
-export function branchStrokes(branch: GraphBranch, angular = false): GraphStroke[] {
-  const lines = placeLines(branch);
-  const corner = ROW_HEIGHT * (angular ? 0.38 : 0.8);
+export function branchStrokes(branch: GraphBranch, angular = false, rowHeight = ROW_HEIGHT): GraphStroke[] {
+  const lines = placeLines(branch, rowHeight);
+  const corner = rowHeight * (angular ? 0.38 : 0.8);
   let path = "";
   lines.forEach((line, i) => {
     const previous = lines[i - 1];

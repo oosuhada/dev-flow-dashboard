@@ -54,7 +54,7 @@ import {
   type Snapshot,
 } from "./api";
 import { buildPullRequestGraph, type PullRelation, type PullRequestInput, type PullRequestModel } from "./graphModel";
-import { GRAPH_PADDING, ROW_HEIGHT, VERTEX_RADIUS } from "./gitgraph/constants";
+import { GRAPH_PADDING, VERTEX_RADIUS } from "./gitgraph/constants";
 import { computeGraphLayout } from "./gitgraph/layout";
 import { buildFileTree, type FileTreeNode } from "./gitgraph/fileTree";
 import { branchStrokes } from "./gitgraph/strokes";
@@ -101,6 +101,75 @@ const DEFAULT_PM_CHAT_SUGGESTIONS = [
 ];
 const ACTIVITY_CATEGORY_ORDER = ["all", "ai", "pr", "review", "comment", "push", "ci"] as const;
 type ActivityCategory = typeof ACTIVITY_CATEGORY_ORDER[number];
+
+type DensityLevel = 1 | 2 | 3 | 4 | 5;
+type PullColumnWidths = [number, number, number, number, number, number];
+
+const DENSITY_METRICS: Record<DensityLevel, { commitRowHeight: number; pullRowHeight: number }> = {
+  1: { commitRowHeight: 24, pullRowHeight: 42 },
+  2: { commitRowHeight: 26, pullRowHeight: 45 },
+  3: { commitRowHeight: 28, pullRowHeight: 48 },
+  4: { commitRowHeight: 30, pullRowHeight: 51 },
+  5: { commitRowHeight: 32, pullRowHeight: 54 },
+};
+
+const PULL_COLUMN_HEADERS = ["Pull request", "Author", "Branch", "Relations", "Review / State", "Updated"] as const;
+const PULL_COLUMN_MIN_WIDTHS: PullColumnWidths = [240, 80, 130, 90, 150, 82];
+const DEFAULT_PULL_COLUMN_WIDTHS: PullColumnWidths = [290, 90, 155, 110, 180, 90];
+
+function ResizableColumnHeader({ label, index, widths, minWidths, onWidths, inset = 0 }: {
+  label: string;
+  index: number;
+  widths: number[];
+  minWidths: number[];
+  onWidths: (value: number[]) => void;
+  inset?: number;
+}) {
+  function startColumnResize(startX: number) {
+    const startWidth = widths[index];
+    const move = (event: PointerEvent) => {
+      const next = [...widths];
+      next[index] = Math.max(minWidths[index], startWidth + event.clientX - startX);
+      onWidths(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("is-resizing");
+    };
+    document.body.classList.add("is-resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  return <span className="pr-column-head" style={inset ? { paddingLeft: inset + 7 } : undefined}>
+    {label}
+    {index < widths.length - 1 && <i
+      className="column-resizer"
+      onPointerDown={(event) => { event.preventDefault(); startColumnResize(event.clientX); }}
+    />}
+  </span>;
+}
+
+function PullColumnHeaderRow({ className, columnWidths, onColumnWidths, graphInset = 0 }: {
+  className: string;
+  columnWidths: PullColumnWidths;
+  onColumnWidths: (value: PullColumnWidths) => void;
+  graphInset?: number;
+}) {
+  const template = columnWidths.map((width) => `${width}px`).join(" ");
+  return <div className={className} style={{ gridTemplateColumns: template }}>
+    {PULL_COLUMN_HEADERS.map((label, index) => <ResizableColumnHeader
+      key={label}
+      label={label}
+      index={index}
+      widths={columnWidths}
+      minWidths={PULL_COLUMN_MIN_WIDTHS}
+      onWidths={(value) => onColumnWidths(value as PullColumnWidths)}
+      inset={index === 0 ? graphInset : 0}
+    />)}
+    {graphInset > 0 && <span className="pr-graph-lane-head" style={{ width: graphInset }}>Graph</span>}
+  </div>;
+}
 
 function activityCategory(item: ActivityItem): Exclude<ActivityCategory, "all"> {
   if (item.source === "ai_pm" || item.event === "ai_project") return "ai";
@@ -149,7 +218,7 @@ function activityBucket(value: string): ActivityBucket | null {
   return "older";
 }
 
-function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, query, columnWidths, onColumnWidths }: {
+function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, query, columnWidths, onColumnWidths, rowHeight }: {
   commits: CommitRecord[];
   headSha: string | null;
   defaultBranch: string;
@@ -158,14 +227,15 @@ function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, quer
   query: string;
   columnWidths: [number, number, number, number, number];
   onColumnWidths: (value: [number, number, number, number, number]) => void;
+  rowHeight: number;
 }) {
   const visible = useMemo(() => commits.slice(0, 100), [commits]);
   const head = headSha ?? visible[0]?.sha ?? null;
   const layout = useMemo(() => computeGraphLayout(visible, head), [visible, head]);
-  const strokes = useMemo(() => layout.branches.flatMap((branch) => branchStrokes(branch, false)), [layout]);
+  const strokes = useMemo(() => layout.branches.flatMap((branch) => branchStrokes(branch, false, rowHeight)), [layout, rowHeight]);
   const layoutWidth = Math.max(64, graphWidth(layout) + GRAPH_PADDING);
   const width = Math.max(layoutWidth, columnWidths[0]);
-  const height = Math.max(ROW_HEIGHT, graphHeight(layout));
+  const height = Math.max(rowHeight, graphHeight(layout, rowHeight));
   const needle = query.trim().toLowerCase();
   const effectiveWidths: [number, number, number, number, number] = [width, ...columnWidths.slice(1)] as [number, number, number, number, number];
   const headerTemplate = effectiveWidths.map((value) => `${value}px`).join(" ");
@@ -202,9 +272,9 @@ function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, quer
             const active = selected === commit.sha;
             const color = laneColor(vertex.colour);
             return <g key={commit.sha}>
-              {active && <circle cx={laneX(vertex.x)} cy={rowY(vertex.y)} r={VERTEX_RADIUS + 4} fill={color} opacity=".18"/>}
+              {active && <circle cx={laneX(vertex.x)} cy={rowY(vertex.y, rowHeight)} r={VERTEX_RADIUS + 4} fill={color} opacity=".18"/>}
               <circle
-                cx={laneX(vertex.x)} cy={rowY(vertex.y)} r={VERTEX_RADIUS}
+                cx={laneX(vertex.x)} cy={rowY(vertex.y, rowHeight)} r={VERTEX_RADIUS}
                 fill={vertex.isCurrent ? "#1e1e1e" : color}
                 stroke={color}
                 strokeWidth={vertex.isCurrent || active ? 2.5 : 1}
@@ -441,7 +511,7 @@ function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: 
   return components.flat();
 }
 
-function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, sort, aiRanks }: {
+function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, sort, aiRanks, columnWidths, onColumnWidths, rowHeight }: {
   pulls: PullRequestInput[];
   relations: PullRelation[];
   flowByNumber: Map<number, PullRequestModel>;
@@ -449,6 +519,9 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, 
   onSelect: (value: number) => void;
   sort: PullSort;
   aiRanks: Map<number, number>;
+  columnWidths: PullColumnWidths;
+  onColumnWidths: (value: PullColumnWidths) => void;
+  rowHeight: number;
 }) {
   const ordered = useMemo(() => orderPulls(pulls, relations, sort, aiRanks), [pulls, relations, sort, aiRanks]);
   const visibleNumbers = useMemo(() => new Set(ordered.map((pull) => pull.number)), [ordered]);
@@ -480,22 +553,21 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, 
     const root = find(pull.number);
     if (!componentColour.has(root)) componentColour.set(root, nextColour++);
   }
-  const PR_ROW_HEIGHT = 42;
-  const PR_LANE_WIDTH = 22;
   const PR_LANE_OFFSET = 18;
   const maxDepth = Math.max(0, ...ordered.map((pull) => depth.get(pull.number) ?? 0));
-  const width = Math.max(58, PR_LANE_OFFSET * 2 + (maxDepth + 1) * PR_LANE_WIDTH);
-  const height = Math.max(PR_ROW_HEIGHT, ordered.length * PR_ROW_HEIGHT);
+  const graphInset = Math.max(58, Math.min(Math.max(58, columnWidths[0] - 130), PR_LANE_OFFSET * 2 + (maxDepth + 1) * 22));
+  const laneWidth = maxDepth > 0 ? Math.min(22, Math.max(10, (graphInset - PR_LANE_OFFSET * 2) / maxDepth)) : 22;
+  const height = Math.max(rowHeight, ordered.length * rowHeight);
+  const template = columnWidths.map((value) => `${value}px`).join(" ");
+  const tableWidth = columnWidths.reduce((sum, value) => sum + value, 0);
   const points = new Map(ordered.map((pull, index) => [pull.number, {
-    x: PR_LANE_OFFSET + (depth.get(pull.number) ?? 0) * PR_LANE_WIDTH,
-    y: index * PR_ROW_HEIGHT + PR_ROW_HEIGHT / 2,
+    x: PR_LANE_OFFSET + (depth.get(pull.number) ?? 0) * laneWidth,
+    y: index * rowHeight + rowHeight / 2,
   }]));
-  return <div className="pr-graph-table" data-testid="pr-graph" data-edge-count={visibleRelations.length}>
-    <div className="pr-graph-head" style={{ gridTemplateColumns: `${width}px minmax(330px,1fr) 130px minmax(190px,.5fr) 132px 110px` }}>
-      <span>Graph</span><span>Pull request</span><span>Author</span><span>Branch</span><span>Review / State</span><span>Updated</span>
-    </div>
+  return <div className="pr-graph-table" data-testid="pr-graph" data-edge-count={visibleRelations.length} style={{ minWidth: `${tableWidth}px` }}>
+    <PullColumnHeaderRow className="pr-graph-head" columnWidths={columnWidths} onColumnWidths={onColumnWidths} graphInset={graphInset}/>
     <div className="pr-graph-body">
-      <div className="pr-graph-svg" style={{ width }}><svg width={width} height={height} aria-hidden="true">
+      <div className="pr-graph-svg" style={{ width: graphInset }}><svg width={graphInset} height={height} aria-hidden="true">
         {visibleRelations.map((edge) => {
           const from = points.get(edge.source); const to = points.get(edge.target);
           if (!from || !to) return null;
@@ -513,16 +585,17 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, 
           return <g key={pull.number}>{active && <circle cx={point.x} cy={point.y} r={VERTEX_RADIUS + 4} fill={color} opacity=".2"/>}<circle cx={point.x} cy={point.y} r={VERTEX_RADIUS} fill={connected ? color : "#777"} stroke="#1e1e1e" strokeWidth={active ? 2.5 : 1}/></g>;
         })}
       </svg></div>
-      <div className="pr-graph-rows" style={{ marginLeft: width }}>
+      <div className="pr-graph-rows" style={{ minWidth: `${tableWidth}px` }}>
         {ordered.map((pull) => {
           const flow = flowByNumber.get(pull.number);
           const deps = upstream.get(pull.number) ?? [];
           const blocks = downstream.get(pull.number) ?? [];
           const reviews = reviewSignals(pull);
-          return <button key={pull.number} className={`pr-graph-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
-            <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span>{aiRanks.has(pull.number) && <span className="ai-row-rank">AI {aiRanks.get(pull.number)}</span>}<span className="pr-title-text">{pull.title}</span>{deps.length > 0 && <span className="relation-chip">after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span className="relation-chip impact">blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}</div>
+          return <button key={pull.number} style={{ gridTemplateColumns: template }} className={`pr-graph-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
+            <div className="pr-graph-title" style={{ paddingLeft: graphInset + 8 }}><span className="pr-number">#{pull.number}</span>{aiRanks.has(pull.number) && <span className="ai-row-rank">AI {aiRanks.get(pull.number)}</span>}<span className="pr-title-text">{pull.title}</span></div>
             <span className="pr-author">{pull.author}</span>
             <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
+            <span className="pr-relations">{deps.length > 0 && <span>after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span>blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}{deps.length === 0 && blocks.length === 0 && <i>—</i>}</span>
             <span className="pr-review-state"><span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}</span>{flow && <><small className={`auto-review auto-${reviews.autoLabel.toLowerCase()}`}>AUTO {reviews.autoLabel}</small><small className={`human-review human-${reviews.humanLabel.toLowerCase()}`}>HUMAN {reviews.humanLabel}</small></>}</span>
             <time>{shortDate(pull.updatedAt)}</time>
           </button>;
@@ -540,8 +613,8 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   onSelect: (value: number) => void;
   sort: PullSort;
   aiRanks: Map<number, number>;
-  columnWidths: [number, number, number, number, number, number];
-  onColumnWidths: (value: [number, number, number, number, number, number]) => void;
+  columnWidths: PullColumnWidths;
+  onColumnWidths: (value: PullColumnWidths) => void;
 }) {
   const visibleNumbers = new Set(pulls.map((pull) => pull.number));
   const upstream = new Map<number, number[]>();
@@ -553,20 +626,8 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   }
   const ordered = orderPulls(pulls, relations, sort, aiRanks);
   const template = columnWidths.map((width) => `${width}px`).join(" ");
-  const minWidths = [260, 90, 140, 100, 160, 90];
-  function startColumnResize(index: number, startX: number) {
-    const startWidth = columnWidths[index];
-    const move = (event: PointerEvent) => {
-      const next = [...columnWidths] as [number, number, number, number, number, number];
-      next[index] = Math.max(minWidths[index], startWidth + event.clientX - startX);
-      onColumnWidths(next);
-    };
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
-  }
-  const headers = ["Pull request", "Author", "Branch", "Relations", "Review / State", "Updated"];
   return <div className="pr-list" data-testid="pr-list" style={{ minWidth: `${columnWidths.reduce((sum, width) => sum + width, 0)}px` }}>
-    <div className="pr-list-head" style={{ gridTemplateColumns: template }}>{headers.map((label, index) => <span key={label} className="pr-column-head">{label}{index < headers.length - 1 && <i className="column-resizer" onPointerDown={(event) => { event.preventDefault(); startColumnResize(index, event.clientX); }}/>}</span>)}</div>
+    <PullColumnHeaderRow className="pr-list-head" columnWidths={columnWidths} onColumnWidths={onColumnWidths}/>
     {ordered.map((pull) => {
       const deps = upstream.get(pull.number) ?? [];
       const blocks = downstream.get(pull.number) ?? [];
@@ -913,6 +974,10 @@ export function App() {
     if (saved === "dark" || saved === "light") return saved;
     return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   });
+  const [density, setDensity] = useState<DensityLevel>(() => {
+    const saved = Number(window.localStorage.getItem("dev-flow-density"));
+    return saved >= 1 && saved <= 5 ? saved as DensityLevel : 1;
+  });
   const [repos, setRepos] = useState<string[]>([]);
   const [repo, setRepo] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -933,10 +998,10 @@ export function App() {
   const [pullDetail, setPullDetail] = useState<PullDetail | null>(null);
   const [pullLoading, setPullLoading] = useState(false);
   const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
-  const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
+  const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("open");
   const [pullSort, setPullSort] = useState<PullSort>("ai");
   const [showPullGraph, setShowPullGraph] = useState(true);
-  const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
+  const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("filtered");
   const [liveConnected, setLiveConnected] = useState(false);
   const [aiProject, setAIProject] = useState<AIProjectState | null>(null);
   const [aiLoading, setAILoading] = useState(false);
@@ -945,12 +1010,14 @@ export function App() {
   const [aiPanelOpen, setAIPanelOpen] = useState(() => window.localStorage.getItem("dev-flow-ai-panel") !== "closed");
   const [aiPanelWidth, setAIPanelWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-ai-width")) || 360);
   const [inspectorWidth, setInspectorWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-inspector-width")) || 520);
-  const [prColumnWidths, setPrColumnWidths] = useState<[number, number, number, number, number, number]>(() => {
+  const [prColumnWidths, setPrColumnWidths] = useState<PullColumnWidths>(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem("dev-flow-pr-columns") ?? "null");
-      if (Array.isArray(saved) && saved.length === 6 && saved.every((value) => Number.isFinite(value))) return saved as [number, number, number, number, number, number];
+      if (Array.isArray(saved) && saved.length === 6 && saved.every((value) => Number.isFinite(value))) {
+        return saved.map((value, index) => Math.max(PULL_COLUMN_MIN_WIDTHS[index], value)) as PullColumnWidths;
+      }
     } catch { /* use defaults */ }
-    return [420, 120, 220, 160, 220, 110];
+    return DEFAULT_PULL_COLUMN_WIDTHS;
   });
   const [commitColumnWidths, setCommitColumnWidths] = useState<[number, number, number, number, number]>(() => {
     try {
@@ -967,6 +1034,11 @@ export function App() {
     document.documentElement.style.colorScheme = theme;
     window.localStorage.setItem("dev-flow-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.density = String(density);
+    window.localStorage.setItem("dev-flow-density", String(density));
+  }, [density]);
 
   useEffect(() => { loadRepositories().then((items) => { setRepos(items); setRepo((current) => current || items[0] || ""); }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
   async function refresh(target: string, force = false) {
@@ -1150,10 +1222,11 @@ export function App() {
   }, [snapshot, pullGraphScope, visiblePulls]);
 
   const hasInspector = Boolean((selectedCommit && tab === "commits") || (selectedPull && tab === "pulls"));
+  const densityMetrics = DENSITY_METRICS[density];
   const workbenchColumns = [
-    ...(aiPanelOpen ? [`${aiPanelWidth}px`, "5px"] : []),
-    "minmax(420px, 1fr)",
-    ...(hasInspector ? ["5px", `${inspectorWidth}px`] : []),
+    ...(aiPanelOpen ? [`min(${aiPanelWidth}px, 28vw)`, "5px"] : []),
+    "minmax(320px, 1fr)",
+    ...(hasInspector ? ["5px", `min(${inspectorWidth}px, 36vw)`] : []),
   ].join(" ");
 
   function startPanelResize(side: "ai" | "inspector", startX: number) {
@@ -1172,7 +1245,7 @@ export function App() {
     <header className="app-titlebar">
       <div className="app-mark"><GitBranch size={15}/><strong>Dev Flow</strong></div>
       <div className="repo-picker"><select aria-label="Repository" value={repo} onChange={(event) => setRepo(event.target.value)}>{repos.map((item) => <option key={item}>{item}</option>)}</select></div>
-      <div className="title-actions"><button className={`ai-toggle ${aiPanelOpen ? "active" : ""}`} onClick={() => setAIPanelOpen((value) => !value)} title="AI Project Manager"><Sparkles size={14}/>{unreadActivityCount > 0 && <span className="toolbar-unread">{unreadActivityCount > 99 ? "99+" : unreadActivityCount}</span>}</button><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
+      <div className="title-actions"><button className={`ai-toggle ${aiPanelOpen ? "active" : ""}`} onClick={() => setAIPanelOpen((value) => !value)} title="AI Project Manager"><Sparkles size={14}/>{unreadActivityCount > 0 && <span className="toolbar-unread">{unreadActivityCount > 99 ? "99+" : unreadActivityCount}</span>}</button><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><button className="density-toggle" onClick={() => setDensity((value) => (value === 5 ? 1 : value + 1) as DensityLevel)} title={`Density and font size ${density} of 5`} aria-label={`Density and font size ${density} of 5`}>Aa{density}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
     </header>
 
     <div className="app-toolbar">
@@ -1204,6 +1277,7 @@ export function App() {
           query={query}
           columnWidths={commitColumnWidths}
           onColumnWidths={setCommitColumnWidths}
+          rowHeight={densityMetrics.commitRowHeight}
         />}
         {snapshot && tab === "pulls" && (showPullGraph
           ? <PullRequestGraph
@@ -1214,6 +1288,9 @@ export function App() {
               onSelect={(number) => void inspectPull(number)}
               sort={pullSort}
               aiRanks={aiRanks}
+              columnWidths={prColumnWidths}
+              onColumnWidths={setPrColumnWidths}
+              rowHeight={densityMetrics.pullRowHeight}
             />
           : <PullRequestList
               pulls={visiblePulls}
