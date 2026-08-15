@@ -88,6 +88,17 @@ function relativeAge(value: string) {
 
 const ACTIVITY_BUCKET_ORDER = ["1h", "2h", "3h", "6h", "12h", "1d", "2d", "3d", "1w", "older"] as const;
 type ActivityBucket = typeof ACTIVITY_BUCKET_ORDER[number];
+
+const DEFAULT_PM_CHAT_SUGGESTIONS = [
+  "그 다음에 뭐할까?",
+  "지금 가장 큰 병목은 뭐야?",
+  "각 팀원이 지금 해야 할 일 알려줘",
+  "지금 머지해야 할 PR 순서 알려줘",
+  "오버엔지니어링 중인 작업이 있어?",
+  "오늘 안에 끝내야 할 작업은 뭐야?",
+  "지금 멈춰야 할 작업이 있어?",
+  "다음 handoff는 누구에게 해야 해?",
+];
 const ACTIVITY_CATEGORY_ORDER = ["all", "ai", "pr", "review", "comment", "push", "ci"] as const;
 type ActivityCategory = typeof ACTIVITY_CATEGORY_ORDER[number];
 
@@ -588,7 +599,8 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [messages, setMessages] = useState<AIChatMessage[]>([]);
-  const [suggestions, setSuggestions] = useState<string[]>(["그 다음에 뭐할까?", "지금 가장 큰 병목은 뭐야?", "각 팀원이 지금 해야 할 일 알려줘"]);
+  const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_PM_CHAT_SUGGESTIONS);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [history, setHistory] = useState<AIProjectHistoryItem[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [selectedSnapshot, setSelectedSnapshot] = useState<AIProjectState | null>(null);
@@ -714,7 +726,7 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     try {
       const response = await askAIProject(value, history);
       setMessages((items) => [...items, { role: "assistant", content: response.answer }]);
-      setSuggestions(response.suggestedQuestions ?? []);
+      setSuggestions(Array.from(new Set([...(response.suggestedQuestions ?? []), ...DEFAULT_PM_CHAT_SUGGESTIONS])).slice(0, 10));
     } catch (reason) {
       setMessages((items) => [...items, { role: "assistant", content: reason instanceof Error ? reason.message : "AI PM chat failed" }]);
     } finally { setChatLoading(false); }
@@ -763,9 +775,12 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
         </section>
       </div>}
     </div> : tab === "chat" ? <div className="ai-chat">
-      <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={18}/><strong>프로젝트 맥락을 기억하고 있습니다.</strong><span>다음 작업, 병목, 팀원별 역할, PR 우선순위를 물어보세요.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>)}{chatLoading && <div className="ai-chat-thinking">Gemini가 현재 PM 상태를 확인하는 중…</div>}</div>
-      {suggestions.length > 0 && <div className="ai-chat-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void sendChat(suggestion)}>{suggestion}</button>)}</div>}
-      <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="그 다음에 뭐할까?" rows={2}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
+      <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={20}/><strong>AI PM에게 무엇이든 물어보세요.</strong><span>현재 프로젝트 목표, 역할, PR 상태와 직전 판단을 기억하고 있습니다.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message-row ${message.role}`}><div className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div></div>)}{chatLoading && <div className="ai-chat-thinking"><span/><em>Gemini가 현재 프로젝트 상태를 다시 확인하고 있습니다…</em></div>}</div>
+      {suggestions.length > 0 && <section className={`ai-chat-suggestions ${suggestionsOpen ? "open" : ""}`}>
+        <button className="ai-chat-suggestions-toggle" onClick={() => setSuggestionsOpen((value) => !value)} aria-expanded={suggestionsOpen}><div><Sparkles size={12}/><strong>Suggested questions</strong><span>{suggestions.length}</span></div>{suggestionsOpen ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button>
+        {suggestionsOpen && <div className="ai-chat-suggestion-grid">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => { setSuggestionsOpen(false); void sendChat(suggestion); }}>{suggestion}</button>)}</div>}
+      </section>}
+      <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendChat(); } }} placeholder="AI PM에게 질문하기…" rows={3}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
     </div> : <div className="activity-inbox">
       <div className="activity-toolbar"><div><Bell size={12}/><strong>Live activity</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh activity"><RefreshCw size={11}/></button></div>
       <div className="activity-filters">
