@@ -24,6 +24,7 @@ import {
   Sparkles,
   RefreshCw,
   Search,
+  ShieldCheck,
   Sun,
   Tag,
   X,
@@ -59,6 +60,7 @@ import { computeGraphLayout } from "./gitgraph/layout";
 import { buildFileTree, type FileTreeNode } from "./gitgraph/fileTree";
 import { branchStrokes } from "./gitgraph/strokes";
 import { graphHeight, graphWidth, laneX, rowY } from "./gitgraph/utils";
+import { PRStatusBoard } from "./PRStatusBoard";
 
 const GRAPH_COLORS = [
   "#0085d9", "#d9008f", "#00d90a", "#d98500", "#a300d9", "#ff0000",
@@ -983,7 +985,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"commits" | "pulls">("pulls");
+  const [tab, setTab] = useState<"commits" | "pulls" | "status">("pulls");
   const [query, setQuery] = useState("");
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
@@ -1261,8 +1263,8 @@ export function App() {
     </header>
 
     <div className="app-toolbar">
-      <div className="tabs"><button className={tab === "commits" ? "active" : ""} onClick={() => setTab("commits")}><GitCommit size={13}/> Commit Graph</button><button className={tab === "pulls" ? "active" : ""} onClick={() => setTab("pulls")}><GitPullRequest size={13}/> Pull Requests <span>{pullCounts.all}</span></button></div>
-      <label className="graph-search"><Search size={13}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "commits" ? "Filter commits, branches, authors…" : "Filter pull requests…"}/></label>
+      <div className="tabs"><button className={tab === "commits" ? "active" : ""} onClick={() => setTab("commits")}><GitCommit size={13}/> Commit Graph</button><button className={tab === "pulls" ? "active" : ""} onClick={() => setTab("pulls")}><GitPullRequest size={13}/> Pull Requests <span>{pullCounts.all}</span></button><button className={tab === "status" ? "active" : ""} onClick={() => setTab("status")}><ShieldCheck size={13}/> PR Status Board</button></div>
+      <label className="graph-search"><Search size={13}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "commits" ? "Filter commits, branches, authors…" : tab === "pulls" ? "Filter pull requests…" : "Filter PR status board…"}/></label>
     </div>
 
     {tab === "pulls" && <div className="pr-filterbar">
@@ -1279,7 +1281,8 @@ export function App() {
     <section className={`workbench ${hasInspector ? "with-inspector" : ""} ${aiPanelOpen ? "with-ai" : ""}`} style={{ gridTemplateColumns: workbenchColumns }}>
       {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} activity={activity} unreadCount={unreadActivityCount} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork} onOpenActivity={openActivityItem} onMarkActivityRead={markActivityRead} onRefreshActivity={() => void refreshActivity()}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
       <div className="graph-pane">
-        {loading && !snapshot ? <div className="center-message">Loading…</div> : null}
+        {tab === "status" && <PRStatusBoard query={query}/>}
+        {tab !== "status" && loading && !snapshot ? <div className="center-message">Loading…</div> : null}
         {snapshot && tab === "commits" && <CommitGraph
           commits={snapshot.commits}
           headSha={snapshot.headSha}
