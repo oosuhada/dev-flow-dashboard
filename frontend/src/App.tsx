@@ -584,7 +584,7 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   </div>;
 }
 
-function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, onRefresh, onSelectPull, onMarkActivityRead, onRefreshActivity }: {
+function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, onRefresh, onSelectPull, onOpenActivity, onMarkActivityRead, onRefreshActivity }: {
   state: AIProjectState | null;
   loading: boolean;
   currentRepo: string;
@@ -592,6 +592,7 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   unreadCount: number;
   onRefresh: () => void;
   onSelectPull: (repository: string, number: number) => void;
+  onOpenActivity: (item: ActivityItem) => void;
   onMarkActivityRead: () => void;
   onRefreshActivity: () => void;
 }) {
@@ -664,9 +665,22 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     finally { setHistoryLoading(false); }
   }
 
+  function openActivity(item: ActivityItem) {
+    const snapshotId = Number(item.metadata?.pmSnapshotId ?? 0);
+    if (item.source === "ai_pm" && snapshotId > 0) {
+      setTab("pm");
+      void selectSnapshot(snapshotId);
+      return;
+    }
+    onOpenActivity(item);
+  }
+
   function activityRow(item: ActivityItem) {
     const category = activityCategory(item);
-    return <button key={item.id} className={`activity-item source-${item.source}`} onClick={() => item.number ? onSelectPull(item.repository, item.number) : undefined} title={new Date(item.createdAt).toLocaleString()}>
+    const pmSnapshotId = Number(item.metadata?.pmSnapshotId ?? 0);
+    const actionable = Boolean(pmSnapshotId > 0 || item.number || (typeof item.metadata?.sha === "string" && item.metadata.sha));
+    const actionTitle = pmSnapshotId > 0 ? "Open this AI PM judgement" : "Open related inspector";
+    return <button key={item.id} className={`activity-item source-${item.source} ${actionable ? "actionable" : ""}`} onClick={() => actionable ? openActivity(item) : undefined} title={actionable ? actionTitle : new Date(item.createdAt).toLocaleString()}>
       <span className="activity-source-dot"/>
       <div><header><span className={`activity-kind kind-${category}`}>{activityCategoryLabel(category)}</span><strong>{item.title}</strong><time>{relativeAge(item.createdAt)}</time></header><p>{item.summary || `${item.event}${item.action ? ` · ${item.action}` : ""}`}</p><footer><span>{item.repository.split("/").at(-1)}</span>{item.number && <span>PR #{item.number}</span>}{item.actor && <span>@{item.actor}</span>}<time>{shortDate(item.createdAt)}</time></footer></div>
     </button>;
@@ -691,18 +705,28 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
       const first = cluster.items[0];
       const category = activityCategory(first);
       const expanded = expandedActivityClusters.has(cluster.key);
+      const pmSnapshotId = Number(first.metadata?.pmSnapshotId ?? 0);
+      const actionable = Boolean(pmSnapshotId > 0 || first.number || (typeof first.metadata?.sha === "string" && first.metadata.sha));
       return <article className="activity-cluster" key={cluster.key}>
-        <button className="activity-cluster-head" onClick={() => setExpandedActivityClusters((current) => {
+        <div className="activity-cluster-head">
+          <button className="activity-cluster-main" onClick={() => actionable ? openActivity(first) : setExpandedActivityClusters((current) => {
+            const next = new Set(current);
+            if (!next.delete(cluster.key)) next.add(cluster.key);
+            return next;
+          })} title={actionable ? (pmSnapshotId > 0 ? "Open this AI PM judgement" : "Open related inspector") : "Expand grouped activity"}>
+            <span className={`activity-kind kind-${category}`}>{activityCategoryLabel(category)}</span>
+            <div><strong>{first.number ? `PR #${first.number}` : first.repository.split("/").at(-1)}</strong><span>{first.title}</span></div>
+            <small>{cluster.items.length} updates</small>
+            <time>{relativeAge(first.createdAt)}</time>
+          </button>
+          <button className="activity-cluster-toggle" aria-label={expanded ? "Collapse grouped activity" : "Expand grouped activity"} onClick={() => setExpandedActivityClusters((current) => {
           const next = new Set(current);
           if (!next.delete(cluster.key)) next.add(cluster.key);
           return next;
         })}>
-          <span className={`activity-kind kind-${category}`}>{activityCategoryLabel(category)}</span>
-          <div><strong>{first.number ? `PR #${first.number}` : first.repository.split("/").at(-1)}</strong><span>{first.title}</span></div>
-          <small>{cluster.items.length} updates</small>
-          <time>{relativeAge(first.createdAt)}</time>
           {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-        </button>
+          </button>
+        </div>
         {expanded && <div className="activity-cluster-items">{cluster.items.map(activityRow)}</div>}
       </article>;
     });
@@ -784,10 +808,10 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     </div> : <div className="activity-inbox">
       <div className="activity-toolbar"><div><Bell size={12}/><strong>Live activity</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh activity"><RefreshCw size={11}/></button></div>
       <div className="activity-filters">
-        <div className="activity-kind-filters">{ACTIVITY_CATEGORY_ORDER.map((category) => <button key={category} className={activityFilter === category ? "active" : ""} onClick={() => setActivityFilter(category)}><span>{activityCategoryLabel(category)}</span><small>{activityCategoryCounts[category]}</small></button>)}</div>
-        <div className="activity-filter-options">
-          <select aria-label="Activity repository" value={activityRepoFilter} onChange={(event) => setActivityRepoFilter(event.target.value)}><option value="all">All repos</option>{activityRepositories.map((repository) => <option value={repository} key={repository}>{repository.split("/").at(-1)}</option>)}</select>
-          <label><input type="checkbox" checked={groupSimilarActivity} onChange={(event) => setGroupSimilarActivity(event.target.checked)}/><span>Group similar</span></label>
+        <div className="activity-filter-row">
+          <select className="activity-repo-select" aria-label="Activity repository" value={activityRepoFilter} onChange={(event) => setActivityRepoFilter(event.target.value)}><option value="all">All repos</option>{activityRepositories.map((repository) => <option value={repository} key={repository}>{repository.split("/").at(-1)}</option>)}</select>
+          <div className="activity-kind-filters">{ACTIVITY_CATEGORY_ORDER.map((category) => <button key={category} className={activityFilter === category ? "active" : ""} onClick={() => setActivityFilter(category)}><span>{activityCategoryLabel(category)}</span><small>{activityCategoryCounts[category]}</small></button>)}</div>
+          <label className="activity-group-toggle"><input type="checkbox" checked={groupSimilarActivity} onChange={(event) => setGroupSimilarActivity(event.target.checked)}/><span>Group similar</span></label>
         </div>
       </div>
       {activity.length === 0 && <div className="activity-empty">GitHub 변화가 들어오면 여기에 누적됩니다.</div>}
@@ -936,6 +960,7 @@ export function App() {
     return [150, 520, 150, 130, 92];
   });
   const [pendingPull, setPendingPull] = useState<{ repository: string; number: number } | null>(null);
+  const [pendingCommit, setPendingCommit] = useState<{ repository: string; sha: string } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1014,11 +1039,12 @@ export function App() {
     };
   }, [repo, selectedPull, selectedCommit]);
 
-  async function inspectCommit(commit: CommitRecord) {
-    setSelectedCommit(commit.sha); setCommitLoading(true); setCommitDetail(null); setCommitAI(null); setCommitAILoading(true); setSelectedFile(null); setFileContent(null); setFileMode("diff");
-    void loadAICommit(repo, commit.sha).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
+  async function inspectCommit(commit: CommitRecord | string, targetRepo = repo) {
+    const sha = typeof commit === "string" ? commit : commit.sha;
+    setSelectedCommit(sha); setCommitLoading(true); setCommitDetail(null); setCommitAI(null); setCommitAILoading(true); setSelectedFile(null); setFileContent(null); setFileMode("diff");
+    void loadAICommit(targetRepo, sha).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
     try {
-      const detail = await loadCommit(repo, commit.sha);
+      const detail = await loadCommit(targetRepo, sha);
       setCommitDetail(detail);
       setSelectedFile(detail.files[0]?.filename ?? null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load commit"); }
@@ -1043,11 +1069,34 @@ export function App() {
     setRepo(targetRepo);
   }
 
+  function openActivityItem(item: ActivityItem) {
+    if (item.number) {
+      openPMWork(item.repository, item.number);
+      return;
+    }
+    const sha = typeof item.metadata?.sha === "string" ? item.metadata.sha : "";
+    if (!sha) return;
+    setTab("commits");
+    if (item.repository === repo) {
+      void inspectCommit(sha, item.repository);
+      return;
+    }
+    setPendingCommit({ repository: item.repository, sha });
+    setRepo(item.repository);
+  }
+
   useEffect(() => {
     if (!pendingPull || pendingPull.repository !== repo) return;
     void inspectPull(pendingPull.number, pendingPull.repository);
     setPendingPull(null);
   }, [repo, pendingPull]);
+
+  useEffect(() => {
+    if (!pendingCommit || pendingCommit.repository !== repo) return;
+    setTab("commits");
+    void inspectCommit(pendingCommit.sha, pendingCommit.repository);
+    setPendingCommit(null);
+  }, [repo, pendingCommit]);
 
   useEffect(() => {
     if (fileMode !== "file" || !selectedCommit || !selectedFile || !commitDetail) return;
@@ -1143,7 +1192,7 @@ export function App() {
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
     <section className={`workbench ${hasInspector ? "with-inspector" : ""} ${aiPanelOpen ? "with-ai" : ""}`} style={{ gridTemplateColumns: workbenchColumns }}>
-      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} activity={activity} unreadCount={unreadActivityCount} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork} onMarkActivityRead={markActivityRead} onRefreshActivity={() => void refreshActivity()}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
+      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} activity={activity} unreadCount={unreadActivityCount} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork} onOpenActivity={openActivityItem} onMarkActivityRead={markActivityRead} onRefreshActivity={() => void refreshActivity()}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
       <div className="graph-pane">
         {loading && !snapshot ? <div className="center-message">Loading…</div> : null}
         {snapshot && tab === "commits" && <CommitGraph

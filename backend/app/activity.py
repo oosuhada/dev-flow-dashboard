@@ -125,6 +125,7 @@ class ActivityStore:
         review = payload.get("review") or {}
         comment = payload.get("comment") or {}
         check_run = payload.get("check_run") or {}
+        check_suite = payload.get("check_suite") or {}
         workflow_run = payload.get("workflow_run") or {}
 
         subject = pull or issue
@@ -161,6 +162,21 @@ class ActivityStore:
             title = f"{event.replace('_', ' ')} · {action or 'updated'}"
             summary = subject_title or None
 
+        sha = None
+        ref = None
+        if event == "push":
+            sha = str(payload.get("after") or "") or None
+            ref = str(payload.get("ref") or "").removeprefix("refs/heads/") or None
+        elif event == "check_run":
+            sha = str(check_run.get("head_sha") or "") or None
+        elif event == "check_suite":
+            sha = str(check_suite.get("head_sha") or "") or None
+        elif event == "workflow_run":
+            sha = str(workflow_run.get("head_sha") or "") or None
+            ref = str(workflow_run.get("head_branch") or "") or None
+        elif pull:
+            sha = str(((pull.get("head") or {}).get("sha") or "")) or None
+
         return self.add(
             source="github",
             repository=repository,
@@ -171,7 +187,12 @@ class ActivityStore:
             title=title,
             summary=summary,
             url=url,
-            metadata={"deliveryType": event},
+            metadata={
+                "deliveryType": event,
+                "sha": sha,
+                "ref": ref,
+                "workflow": workflow_run.get("name") or check_run.get("name"),
+            },
         )
 
     def list(self, *, limit: int = 300, repository: str | None = None) -> list[dict[str, Any]]:
