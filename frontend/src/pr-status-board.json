@@ -1,30 +1,65 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T12:06:00+09:00",
-  "asOfLabel": "2026-08-20 12:06 KST 기준",
+  "updatedAt": "2026-08-20T12:17:00+09:00",
+  "asOfLabel": "2026-08-20 12:17 KST 기준",
   "updatedBy": "manual push",
   "headline": "Open PR merge order",
-  "note": "Merged PRs are intentionally hidden. This source-controlled board shows only open work and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
+  "note": "Merged PRs are removed as soon as they land. This source-controlled board shows only open work, current blockers, and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
   "mergePlan": [
     {
-      "label": "1 · 독립 CI/CD 먼저",
-      "value": "#93 Vercel 제거 + Mac mini frontend CD → #94 Vertex escalation 절감"
+      "order": 1,
+      "tone": "cicd",
+      "label": "독립 CI/CD",
+      "prs": [
+        93,
+        94
+      ],
+      "note": "#93 먼저. #94는 정교화가 끝나고 새 HEAD CI가 green이 된 뒤 병합"
     },
     {
-      "label": "2 · Main 독립",
-      "value": "#78 Dataset → #81 Project"
+      "order": 2,
+      "tone": "project",
+      "label": "Project stack",
+      "prs": [
+        81,
+        80,
+        84
+      ],
+      "note": "#78 merge로 main이 전진했으므로 #81을 최신 main에 다시 맞춘 뒤 순차 진행"
     },
     {
-      "label": "3 · Project stack",
-      "value": "#81 → #80 Ontology → #84 Planner"
+      "order": 3,
+      "tone": "diagnosis",
+      "label": "Diagnosis stack",
+      "prs": [
+        86,
+        87,
+        88,
+        89,
+        90
+      ],
+      "parallel": [
+        47
+      ],
+      "note": "#86을 최신 main에 다시 맞춘 뒤 #47은 병렬, #87→#90은 순차 병합"
     },
     {
-      "label": "4 · Diagnosis stack",
-      "value": "#86 → #87 → #88 → #89 → #90 · #47은 #86 직후 병렬 병합 가능"
+      "order": 4,
+      "tone": "final",
+      "label": "Final convergence",
+      "prs": [
+        92
+      ],
+      "note": "Domain stack이 main에 들어간 뒤 최신 main rebase + 전체 CI 재검증"
     },
     {
-      "label": "5 · Final",
-      "value": "Domain stack 반영 후 #92 final convergence · #85는 후반 재판단"
+      "order": 5,
+      "tone": "later",
+      "label": "후반 재판단",
+      "prs": [
+        85
+      ],
+      "note": "final strict gate와 중복 여부를 보고 병합 / 흡수 / close 결정"
     }
   ],
   "items": [
@@ -32,113 +67,131 @@
       "number": 93,
       "area": "CI/CD · Mac mini deploy",
       "status": "ready",
+      "sequence": "1.1",
+      "lane": "cicd",
       "decision": "독립 병합 권장 · 먼저",
       "summary": "HEAD cef5712…. main base CLEAN / MERGEABLE. backend-contract, Fast validation, Architecture, Playwright, Docker 등 현재 GitHub CI가 모두 PASS. Vercel 의존을 제거하고 GitHub frontend CI + Mac mini main 자동배포로 전환하는 독립 인프라 PR.",
-      "action": "다른 migration stack과 독립적이므로 먼저 병합해 이후 PR의 Vercel 노이즈를 없애는 것을 권장"
+      "action": "다른 migration stack과 독립적이므로 먼저 병합해 이후 PR의 Vercel 노이즈를 줄이는 것을 권장"
     },
     {
       "number": 94,
       "area": "CI · AI review routing",
-      "status": "ready",
-      "decision": "독립 병합 가능 · #93 다음 권장",
-      "summary": "HEAD cda9ce7…. main base CLEAN / MERGEABLE. 단순 변경량 때문에 Vertex로 강제 escalation하던 조건을 제거하면서 auth/security/OIDC/DB migration 같은 실제 high-risk 경로는 fail-closed로 유지. self-test, backend-contract, Fast validation, Architecture, Playwright, Docker와 review job 모두 PASS.",
-      "action": "#93과 scope가 분리된 독립 CI 정책 PR. #93 병합 후 또는 바로 이어서 병합 권장"
-    },
-    {
-      "number": 78,
-      "area": "Dataset",
-      "status": "ready",
-      "decision": "최신 main 정규화 완료 · 병합 가능",
-      "summary": "HEAD 9b7d305…. #70/#77/#79가 반영된 main 기준 CLEAN / MERGEABLE. Dataset router ownership 유지, Windows local path/file URI 및 Identity seed 호환도 보완. GitHub 필수 CI와 Vercel 모두 PASS.",
-      "action": "#93 뒤 첫 Domain PR로 병합 권장. 병합 후 #81이 main 전진 영향을 받는지만 재확인"
+      "status": "progress",
+      "sequence": "1.2",
+      "lane": "cicd",
+      "decision": "정교화 진행 중 · 아직 병합 완료 아님",
+      "summary": "HEAD 07ffa22…. \"Prevent stale AI reviews after PR updates\" 정교화 커밋이 추가된 최신 상태. 현재 MERGEABLE이고 backend-contract, Fast validation, Architecture, Playwright, Docker는 새 HEAD에서 PASS했지만 review job은 아직 진행 중이며 사용자 작업도 정교화 단계이므로 완료/병합대기 상태로 보지 않음.",
+      "action": "정교화 작업이 끝난 최종 HEAD에서 전체 CI와 review 결과를 다시 확인한 뒤 #93 다음으로 병합"
     },
     {
       "number": 81,
       "area": "Project",
-      "status": "ready",
-      "decision": "최신 main 정규화 완료 · 병합 가능",
-      "summary": "HEAD d2ca3e3…. main base CLEAN / MERGEABLE. Identity의 최신 공개 계약을 authoritative source로 유지한 채 Project ownership을 재배치했고 필수 CI/Vercel PASS.",
-      "action": "#78 반영 후 main conflict 여부를 한 번 확인하고 병합 → #80의 parent로 사용"
+      "status": "review",
+      "sequence": "2.1",
+      "lane": "project",
+      "decision": "#78 merge 반영 재정렬 필요",
+      "summary": "HEAD d2ca3e3…. 직전까지 CLEAN / MERGEABLE + 필수 CI PASS였으나 #78 Dataset이 12:08 KST에 main으로 병합되면서 현재 DIRTY / CONFLICTING으로 다시 변경됨. Project 구현 자체의 신규 blocker는 확인되지 않음.",
+      "action": "#78이 들어간 최신 main을 authoritative source로 유지해 Project 고유 변경만 재base → 검증 → 병합"
     },
     {
       "number": 80,
       "area": "Ontology",
       "status": "waiting",
-      "decision": "#81 다음 · 현재 CLEAN",
-      "summary": "HEAD 8f4ff59…. 새 #81 HEAD 위로 Ontology 고유 4개 commit만 재배치 완료. #81 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel PASS.",
-      "action": "#81 병합 후 최신 main에 ancestry만 확인/정렬하고 바로 병합"
+      "sequence": "2.2",
+      "lane": "project",
+      "decision": "#81 다음 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD 8f4ff59…. #81 base 기준 CLEAN / MERGEABLE이며 필수 CI PASS. Ontology 고유 4개 commit만 새 Project parent 위에 재배치된 상태.",
+      "action": "#81 최신 main 정리·병합 후 Ontology ancestry를 새 main에 맞춰 확인하고 병합"
     },
     {
       "number": 84,
       "area": "Planner",
       "status": "waiting",
-      "decision": "#80 다음 · 현재 CLEAN",
-      "summary": "HEAD ced3026…. 새 #80 HEAD 위로 Planner 고유 commit 재배치 완료. #80 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel PASS.",
+      "sequence": "2.3",
+      "lane": "project",
+      "decision": "#80 다음 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD ced3026…. #80 base 기준 CLEAN / MERGEABLE이며 필수 CI PASS. Planner 고유 blocker는 없음.",
       "action": "#80 병합 후 Planner ancestry를 최신 main에 맞춘 뒤 병합"
     },
     {
       "number": 86,
       "area": "Diagnosis",
-      "status": "ready",
-      "decision": "최신 main 정규화 완료 · 병합 가능",
-      "summary": "HEAD 18432bf…. #70까지 포함한 최신 main 기준 CLEAN / MERGEABLE. predictive-maintenance HTTP ownership은 canonical app/diagnosis/diagnosis_router.py에 유지되고 legacy router는 제거됨. 필수 CI/Vercel PASS.",
-      "action": "Project stack과 독립적으로 병합 가능. 이 PR 병합 후 #47과 #87 stack 진행"
+      "status": "review",
+      "sequence": "3.1",
+      "lane": "diagnosis",
+      "decision": "#78 merge 반영 재정렬 필요",
+      "summary": "HEAD 18432bf…. Diagnosis router ownership 수정과 legacy router 제거 자체는 검증 완료였으나 #78 Dataset merge로 main이 전진하면서 현재 DIRTY / CONFLICTING으로 다시 변경됨.",
+      "action": "최신 main의 Dataset/Identity/Equipment 계약을 보존한 채 Diagnosis 고유 변경을 재base → 전체 CI 확인 → 병합"
     },
     {
       "number": 47,
       "area": "Mac mini 운영",
-      "status": "review",
-      "decision": "#86 위 재정렬 완료 · CI green",
-      "summary": "HEAD 67ac8e8…. 새 #86 위로 운영/worker 11개 commit 재배치 완료. CLEAN / MERGEABLE이고 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 로컬 live/runtime 회귀도 12 passed · 8 skipped.",
-      "action": "#86 병합 직후 병렬 운영 PR로 병합 가능"
+      "status": "waiting",
+      "sequence": "3.2A",
+      "lane": "diagnosis",
+      "decision": "#86 직후 병렬 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD 67ac8e8…. #86 base 기준 CLEAN / MERGEABLE이고 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 로컬 live/runtime 회귀도 12 passed · 8 skipped.",
+      "action": "#86 재정렬·병합 후 새 Diagnosis ancestry만 다시 확인하고 병렬 운영 PR로 병합 가능"
     },
     {
       "number": 87,
       "area": "Maintenance",
       "status": "waiting",
-      "decision": "#86 다음 · 현재 CLEAN",
-      "summary": "HEAD 38f558d…. 새 #86 위로 재배치 완료. Maintenance application/router ownership을 canonical app/maintenance에 유지했고 CLEAN / MERGEABLE, 필수 CI/Vercel PASS.",
+      "sequence": "3.2",
+      "lane": "diagnosis",
+      "decision": "#86 다음 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD 38f558d…. #86 base 기준 CLEAN / MERGEABLE, Maintenance application/router ownership은 canonical app/maintenance에 유지되고 필수 CI PASS.",
       "action": "#86 병합 후 ancestry 확인 → 병합"
     },
     {
       "number": 88,
       "area": "Governance",
       "status": "waiting",
-      "decision": "#87 다음 · 현재 CLEAN",
-      "summary": "HEAD 445228a…. 새 #87 위로 canonical Governance service/router를 재배치하고 parent의 Identity/Diagnosis/Maintenance wiring을 보존. CLEAN / MERGEABLE, 필수 CI/Vercel PASS.",
+      "sequence": "3.3",
+      "lane": "diagnosis",
+      "decision": "#87 다음 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD 445228a…. #87 base 기준 CLEAN / MERGEABLE, canonical Governance service/router와 parent wiring 검증 완료.",
       "action": "#87 병합 후 ancestry 확인 → 병합"
     },
     {
       "number": 89,
       "area": "Dashboard",
       "status": "waiting",
-      "decision": "#88 다음 · conflict 해결 완료",
-      "summary": "HEAD 7988b3b…. 새 #88 위로 Dashboard migration 재배치 완료. legacy dashboard service/router 삭제와 canonical app/dashboard ownership을 유지. CLEAN / MERGEABLE이며 최신 GitHub backend-contract/Fast validation/Architecture/Playwright/Docker가 PASS.",
+      "sequence": "3.4",
+      "lane": "diagnosis",
+      "decision": "#88 다음 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD 7988b3b…. #88 base 기준 CLEAN / MERGEABLE. legacy dashboard service/router 제거와 canonical app/dashboard ownership이 유지되고 최신 필수 CI PASS.",
       "action": "#88 병합 후 ancestry 확인 → 병합"
     },
     {
       "number": 90,
       "area": "Report",
       "status": "waiting",
-      "decision": "#89 다음 · conflict 해결 완료",
-      "summary": "HEAD d3d08da…. 새 #89 위로 Report/Export migration 재배치 완료. canonical app/report 및 report repository ownership 보존. CLEAN / MERGEABLE이고 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS.",
+      "sequence": "3.5",
+      "lane": "diagnosis",
+      "decision": "#89 다음 · 현재 parent 기준 CLEAN",
+      "summary": "HEAD d3d08da…. #89 base 기준 CLEAN / MERGEABLE. canonical app/report 및 report repository ownership을 유지하고 필수 CI PASS.",
       "action": "#89 병합 후 ancestry 확인 → 병합"
     },
     {
       "number": 92,
       "area": "Final convergence",
       "status": "waiting",
-      "decision": "CI green · Domain stack 뒤 최종 병합",
-      "summary": "HEAD d1bc2fa…. 현재 main base CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker, Vercel 모두 PASS. 이전 CI contract/RLS 실패는 해소됐고 더 이상 Draft가 아님.",
-      "action": "#78/#81/#80/#84 및 #86/#87/#88/#89/#90 등 parent migration을 먼저 main에 반영한 뒤 최신 main rebase 후 최종 병합"
+      "sequence": "4.1",
+      "lane": "final",
+      "decision": "Domain stack 뒤 최신 main 재정렬",
+      "summary": "HEAD d1bc2fa…. 이전 HEAD에서는 전체 CI가 green이었지만 #78 merge로 main이 전진하면서 현재 DIRTY / CONFLICTING. Final convergence 자체의 과거 CI contract/RLS 문제는 수정된 상태.",
+      "action": "Project/Diagnosis stack을 먼저 main에 반영 → 최신 main으로 final convergence 재base → backend-contract/Fast validation/Architecture/Playwright/Docker 전체 재검증"
     },
     {
       "number": 85,
       "area": "CI regression",
       "status": "hold",
-      "decision": "최신 main 정규화 + CI green · 후반 보류",
-      "summary": "HEAD d59d41c…. #70/#77/#79가 포함된 최신 main 위로 2개 CI regression commit을 재배치 완료. CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 관련 로컬 회귀도 11 passed, migration ledger/ratchet/architecture PASS.",
-      "action": "Conflict는 더 이상 없음. Domain/Composition 수렴 후 #92/final strict gate와 중복 여부를 보고 병합 또는 흡수/close 결정"
+      "sequence": "5.1",
+      "lane": "later",
+      "decision": "CLEAN / CI green · 후반 보류",
+      "summary": "HEAD d59d41c…. 최신 main 정규화 후 CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 관련 로컬 회귀도 11 passed.",
+      "action": "Domain/Composition 수렴 후 #92/final strict gate와 중복 여부를 보고 병합 또는 흡수/close 결정"
     }
   ]
 }
