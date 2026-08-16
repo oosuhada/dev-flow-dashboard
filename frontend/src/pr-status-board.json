@@ -1,7 +1,7 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T12:04:00+09:00",
-  "asOfLabel": "2026-08-20 12:04 KST 기준",
+  "updatedAt": "2026-08-20T12:06:00+09:00",
+  "asOfLabel": "2026-08-20 12:06 KST 기준",
   "updatedBy": "manual push",
   "headline": "Open PR merge order",
   "note": "Merged PRs are intentionally hidden. This source-controlled board shows only open work and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
@@ -136,8 +136,8 @@
       "number": 85,
       "area": "CI regression",
       "status": "hold",
-      "decision": "최신 main 정규화 완료 · 후반 보류",
-      "summary": "HEAD d59d41c…. #70/#77/#79가 포함된 최신 main 위로 2개 CI regression commit을 재배치해 MERGEABLE 상태로 복구. 관련 로컬 회귀 11 passed, migration ledger/ratchet/architecture PASS. push 후 GitHub backend-contract/Fast validation/Playwright/Docker가 현재 재실행 중.",
+      "decision": "최신 main 정규화 + CI green · 후반 보류",
+      "summary": "HEAD d59d41c…. #70/#77/#79가 포함된 최신 main 위로 2개 CI regression commit을 재배치 완료. CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 관련 로컬 회귀도 11 passed, migration ledger/ratchet/architecture PASS.",
       "action": "Conflict는 더 이상 없음. Domain/Composition 수렴 후 #92/final strict gate와 중복 여부를 보고 병합 또는 흡수/close 결정"
     }
   ]
