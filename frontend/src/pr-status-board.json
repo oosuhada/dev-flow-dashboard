@@ -1,7 +1,7 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T12:17:00+09:00",
-  "asOfLabel": "2026-08-20 12:17 KST 기준",
+  "updatedAt": "2026-08-20T12:28:00+09:00",
+  "asOfLabel": "2026-08-20 12:28 KST 기준",
   "updatedBy": "manual push",
   "headline": "Open PR merge order",
   "note": "Merged PRs are removed as soon as they land. This source-controlled board shows only open work, current blockers, and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
@@ -14,7 +14,7 @@
         93,
         94
       ],
-      "note": "#93 먼저. #94는 정교화가 끝나고 새 HEAD CI가 green이 된 뒤 병합"
+      "note": "#93 먼저 권장. #94는 구현 완료 상태이며 #93과 독립 병합 가능; 동일 HEAD의 추가 review 재실행 실패는 Vertex MAX_TOKENS로 인한 검증 노이즈"
     },
     {
       "order": 2,
@@ -76,12 +76,12 @@
     {
       "number": 94,
       "area": "CI · AI review routing",
-      "status": "progress",
+      "status": "ready",
       "sequence": "1.2",
       "lane": "cicd",
-      "decision": "정교화 진행 중 · 아직 병합 완료 아님",
-      "summary": "HEAD 07ffa22…. \"Prevent stale AI reviews after PR updates\" 정교화 커밋이 추가된 최신 상태. 현재 MERGEABLE이고 backend-contract, Fast validation, Architecture, Playwright, Docker는 새 HEAD에서 PASS했지만 review job은 아직 진행 중이며 사용자 작업도 정교화 단계이므로 완료/병합대기 상태로 보지 않음.",
-      "action": "정교화 작업이 끝난 최종 HEAD에서 전체 CI와 review 결과를 다시 확인한 뒤 #93 다음으로 병합"
+      "decision": "구현 완료 · 병합 가능 · redundant review만 Vertex MAX_TOKENS",
+      "summary": "HEAD 07ffa225…. Vertex 과잉 escalation 완화, Gemma scope-aware falsifier, local Qwen 재시도, stale-HEAD latest-head-wins guard까지 구현 완료. 같은 HEAD의 이전 full review는 PASS 및 Gemini 3.7 Ready to Merge 판정 완료. PR 본문 갱신으로 다시 트리거된 최신 run에서도 backend-contract, Fast validation, aggregate Architecture, Playwright, Docker는 PASS했고 local Qwen 성공 + Gemma falsifier ACCEPT 1.00까지 확인됐으나 최종 Vertex 호출만 MAX_TOKENS로 종료되어 review / review가 실패함. 추가 코드 정교화나 actionable finding은 없음.",
+      "action": "#93과 독립적으로 병합 가능. 순서를 둔다면 #93 다음으로 병합하고, all-green 정책상 필요할 때만 Vertex MAX_TOKENS 재실행/출력 한도 문제를 별도 처리"
     },
     {
       "number": 81,
