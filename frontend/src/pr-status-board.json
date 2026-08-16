@@ -1,7 +1,7 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T12:28:00+09:00",
-  "asOfLabel": "2026-08-20 12:28 KST 기준",
+  "updatedAt": "2026-08-20T12:34:00+09:00",
+  "asOfLabel": "2026-08-20 12:34 KST 기준",
   "updatedBy": "manual push",
   "headline": "Open PR merge order",
   "note": "Merged PRs are removed as soon as they land. This source-controlled board shows only open work, current blockers, and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
@@ -25,7 +25,7 @@
         80,
         84
       ],
-      "note": "#78 merge로 main이 전진했으므로 #81을 최신 main에 다시 맞춘 뒤 순차 진행"
+      "note": "#81은 최신 main 재정렬 + 필수 CI green 완료. #81 병합 후 #80을 새 Project ancestry에 맞추고 #84까지 순차 진행"
     },
     {
       "order": 3,
@@ -41,7 +41,7 @@
       "parallel": [
         47
       ],
-      "note": "#86을 최신 main에 다시 맞춘 뒤 #47은 병렬, #87→#90은 순차 병합"
+      "note": "#86은 최신 main 재정렬 + 필수 CI green 완료. #86 병합 후 #47은 병렬, #87→#90은 새 Diagnosis ancestry에 맞춰 순차 진행"
     },
     {
       "order": 4,
@@ -69,9 +69,9 @@
       "status": "ready",
       "sequence": "1.1",
       "lane": "cicd",
-      "decision": "독립 병합 권장 · 먼저",
-      "summary": "HEAD cef5712…. main base CLEAN / MERGEABLE. backend-contract, Fast validation, Architecture, Playwright, Docker 등 현재 GitHub CI가 모두 PASS. Vercel 의존을 제거하고 GitHub frontend CI + Mac mini main 자동배포로 전환하는 독립 인프라 PR.",
-      "action": "다른 migration stack과 독립적이므로 먼저 병합해 이후 PR의 Vercel 노이즈를 줄이는 것을 권장"
+      "decision": "최신 HEAD CI 진행 중",
+      "summary": "HEAD f93b614…. pull-based Mac mini release watcher 및 rate-limit fallback 문서까지 추가된 최신 상태. MERGEABLE이고 backend-contract는 PASS, Fast validation / Playwright / Docker는 최신 HEAD에서 현재 실행 중.",
+      "action": "독립 CI/CD PR. 최신 HEAD CI가 모두 green인지 확인한 뒤 병합"
     },
     {
       "number": 94,
@@ -86,12 +86,12 @@
     {
       "number": 81,
       "area": "Project",
-      "status": "review",
+      "status": "ready",
       "sequence": "2.1",
       "lane": "project",
-      "decision": "#78 merge 반영 재정렬 필요",
-      "summary": "HEAD d2ca3e3…. 직전까지 CLEAN / MERGEABLE + 필수 CI PASS였으나 #78 Dataset이 12:08 KST에 main으로 병합되면서 현재 DIRTY / CONFLICTING으로 다시 변경됨. Project 구현 자체의 신규 blocker는 확인되지 않음.",
-      "action": "#78이 들어간 최신 main을 authoritative source로 유지해 Project 고유 변경만 재base → 검증 → 병합"
+      "decision": "최신 main 재정렬 완료 · Ready to merge",
+      "summary": "HEAD 88cdbef…. #78 Dataset merge commit 9ef4366 위로 Project 고유 2개 commit 재배치 완료. CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 SUCCESS. 로컬 Project/tenant/Dataset 연계 회귀 27 passed.",
+      "action": "현재 바로 병합 가능. 병합 후 #80을 새 Project ancestry에 맞춰 재정렬"
     },
     {
       "number": 80,
@@ -99,9 +99,9 @@
       "status": "waiting",
       "sequence": "2.2",
       "lane": "project",
-      "decision": "#81 다음 · 현재 parent 기준 CLEAN",
-      "summary": "HEAD 8f4ff59…. #81 base 기준 CLEAN / MERGEABLE이며 필수 CI PASS. Ontology 고유 4개 commit만 새 Project parent 위에 재배치된 상태.",
-      "action": "#81 최신 main 정리·병합 후 Ontology ancestry를 새 main에 맞춰 확인하고 병합"
+      "decision": "#81 다음 · 새 parent 재정렬 필요",
+      "summary": "HEAD 8f4ff59…. #81 branch가 88cdbef로 force-rebase되면서 현재 GitHub 기준 DIRTY / CONFLICTING. Ontology 고유 구현의 기존 CI는 PASS였고 신규 기능 blocker는 없음.",
+      "action": "#81 병합 후 Ontology 고유 commit만 최신 main/새 Project ancestry에 재배치 → 검증 → 병합"
     },
     {
       "number": 84,
@@ -116,12 +116,12 @@
     {
       "number": 86,
       "area": "Diagnosis",
-      "status": "review",
+      "status": "ready",
       "sequence": "3.1",
       "lane": "diagnosis",
-      "decision": "#78 merge 반영 재정렬 필요",
-      "summary": "HEAD 18432bf…. Diagnosis router ownership 수정과 legacy router 제거 자체는 검증 완료였으나 #78 Dataset merge로 main이 전진하면서 현재 DIRTY / CONFLICTING으로 다시 변경됨.",
-      "action": "최신 main의 Dataset/Identity/Equipment 계약을 보존한 채 Diagnosis 고유 변경을 재base → 전체 CI 확인 → 병합"
+      "decision": "최신 main 재정렬 완료 · Ready to merge",
+      "summary": "HEAD a78c4ab…. #78 Dataset merge commit 9ef4366 위로 Diagnosis 고유 commit 재배치 완료. Dataset ingestion ownership은 app/dataset에 유지하고 Prediction/runtime/evidence만 app/diagnosis + app/infra/db로 보존. CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 SUCCESS. 핵심 로컬 회귀 26 passed · 5 skipped.",
+      "action": "현재 바로 병합 가능. 병합 후 #47과 #87의 새 Diagnosis ancestry를 맞춘 뒤 후속 stack 진행"
     },
     {
       "number": 47,
@@ -129,9 +129,9 @@
       "status": "waiting",
       "sequence": "3.2A",
       "lane": "diagnosis",
-      "decision": "#86 직후 병렬 · 현재 parent 기준 CLEAN",
-      "summary": "HEAD 67ac8e8…. #86 base 기준 CLEAN / MERGEABLE이고 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 로컬 live/runtime 회귀도 12 passed · 8 skipped.",
-      "action": "#86 재정렬·병합 후 새 Diagnosis ancestry만 다시 확인하고 병렬 운영 PR로 병합 가능"
+      "decision": "#86 직후 병렬 · parent ancestry 갱신 필요",
+      "summary": "HEAD 67ac8e8…. 기존 #86 기준 검증은 완료됐지만 #86 branch가 a78c4ab로 force-rebase되어 GitHub가 새 parent 관계를 다시 계산 중. 운영 기능 blocker가 새로 발견된 것은 아님.",
+      "action": "#86 병합 후 운영 고유 commit을 새 Diagnosis ancestry에 재정렬 → 검증 후 병렬 병합"
     },
     {
       "number": 87,
@@ -139,9 +139,9 @@
       "status": "waiting",
       "sequence": "3.2",
       "lane": "diagnosis",
-      "decision": "#86 다음 · 현재 parent 기준 CLEAN",
-      "summary": "HEAD 38f558d…. #86 base 기준 CLEAN / MERGEABLE, Maintenance application/router ownership은 canonical app/maintenance에 유지되고 필수 CI PASS.",
-      "action": "#86 병합 후 ancestry 확인 → 병합"
+      "decision": "#86 다음 · parent ancestry 갱신 필요",
+      "summary": "HEAD 38f558d…. 기존 #86 기준 Maintenance ownership과 필수 CI는 검증 완료. #86 force-rebase 후 새 parent 관계를 다시 맞춰야 함.",
+      "action": "#86 병합 후 Maintenance 고유 변경을 새 Diagnosis ancestry에 재배치 → 검증 → 병합"
     },
     {
       "number": 88,
