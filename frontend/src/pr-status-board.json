@@ -1,145 +1,158 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T14:39:00+09:00",
-  "asOfLabel": "2026-08-20 14:39 KST 기준",
-  "updatedBy": "GitHub status refresh",
+  "updatedAt": "2026-08-20T16:07:00+09:00",
+  "asOfLabel": "2026-08-20 16:07 KST 기준",
+  "updatedBy": "GitHub status refresh after stacked rebase",
   "headline": "Open PR merge order",
-  "note": "Merged PRs are removed as soon as they land. This source-controlled board shows only open work, current blockers, and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
+  "note": "Merged PRs are removed as soon as they land. Review pending means the current HEAD is CLEAN/MERGEABLE with required code CI green and is waiting for human review; parent-rebase and final-convergence work are shown separately.",
   "mergePlan": [
     {
       "order": 1,
       "tone": "project",
       "label": "Project stack",
-      "prs": [
-        80,
-        84
-      ],
-      "note": "#81 Project는 main에 병합 완료. #80 Ontology를 #86 Diagnosis까지 포함한 최신 main으로 재정렬한 뒤 #84 Planner ancestry를 이어서 맞춘다."
+      "prs": [80, 84],
+      "note": "#80 Ontology는 최신 main/#86 위 재정렬과 CI 복구까지 완료되어 review pending. #84 Planner는 #80 HEAD가 재작성되어 현재 DIRTY이므로 #80 다음 새 ancestry 재정렬이 필요하다."
     },
     {
       "order": 2,
       "tone": "diagnosis",
       "label": "Diagnosis stack",
-      "prs": [
-        87,
-        88,
-        89,
-        90
-      ],
-      "parallel": [
-        47
-      ],
-      "note": "#86 Diagnosis는 main에 병합 완료. #87 Maintenance와 #47 운영 PR을 최신 main으로 재정렬하고, 이후 #88→#89→#90을 순차 갱신한다. #87에서는 Equipment project scope 명시화, #89/#90에서는 Diagnosis typed read projection 후속을 함께 반영한다."
+      "prs": [87, 88, 89, 90],
+      "parallel": [47],
+      "note": "#87→#88→#89→#90은 새 ancestry 정렬과 후속 contract 보완이 끝났고 현재 모두 required CI green + review pending. #47 Mac mini 운영 PR도 최신 main 재정렬/검증 완료로 병렬 review pending."
     },
     {
       "order": 3,
-      "tone": "final",
-      "label": "Final convergence",
-      "prs": [
-        92
-      ],
-      "note": "남은 domain stack이 main에 들어간 뒤 최신 main rebase + 전체 CI 재검증"
+      "tone": "cicd",
+      "label": "Independent docs",
+      "prs": [95, 96],
+      "note": "#95 Asset detail report contract와 #96 추천 정책/Gold seed 계획은 main 기반 독립 문서 PR. 현재 HEAD는 CLEAN이며 최신 필수 검증 green이라 review pending."
     },
     {
       "order": 4,
+      "tone": "final",
+      "label": "Final convergence",
+      "prs": [92],
+      "note": "#92는 기존 검증 이력은 green이지만 main/domain stack이 전진해 현재 DIRTY. 앞선 domain stack 반영 후 최신 main 재정렬과 전체 재검증이 필요하다."
+    },
+    {
+      "order": 5,
       "tone": "later",
       "label": "후반 재판단",
-      "prs": [
-        85
-      ],
-      "note": "final strict gate와 중복 여부를 보고 병합 / 흡수 / close 결정"
+      "prs": [85],
+      "note": "#85 CI regression follow-up은 CLEAN + CI green이지만 final strict gate와의 중복 가능성 때문에 지금은 의도적으로 hold. domain 수렴 후 병합/흡수/close를 결정한다."
     }
   ],
   "items": [
     {
       "number": 80,
       "area": "Ontology",
-      "status": "waiting",
+      "status": "review",
       "sequence": "1.1",
       "lane": "project",
-      "decision": "#81 병합 반영 · 최신 main rebase 필요",
-      "summary": "HEAD 014a47f…. PR base는 아직 병합된 #81 branch(1921c62…)를 가리킨다. 현재 최신 main 75c4d8d…와 비교하면 Ontology branch는 3 commits ahead / 9 commits behind이며 merge-base는 #81 HEAD다. Ontology 고유 구현 blocker가 새로 발견된 것은 아니다.",
-      "action": "PR base를 main으로 정리하고 #86 변경을 보존하며 Ontology 고유 3 commits를 최신 main 위로 재배치 → Architecture/ratchet/ledger/Ontology 회귀 검증 → #84 parent 갱신"
+      "decision": "CI green · Review pending",
+      "summary": "HEAD 0f9fa24…. Ontology 고유 3 commits를 #81/#86이 포함된 최신 main 위로 재배치하고 PR base도 main으로 전환했다. rebase 후 CI에서 드러난 RoleWorkflowRepository composition import 누락까지 수정했으며 GitHub 기준 CLEAN / MERGEABLE, backend-contract · Fast validation · Architecture · Playwright · Docker 모두 SUCCESS.",
+      "action": "@KOR-GANG / @smmini 작업보고 등록 완료. 최신 HEAD human re-review 대기 → 승인 후 #84 Planner ancestry 갱신"
     },
     {
       "number": 84,
       "area": "Planner",
-      "status": "waiting",
+      "status": "blocked",
       "sequence": "1.2",
       "lane": "project",
-      "decision": "#80 다음 · 현재 #80 기준 CLEAN",
-      "summary": "HEAD 96b376a…. 현재 #80 HEAD 014a47f…를 base로 CLEAN / MERGEABLE이며 Planner 고유 변경은 1 commit이다. #80이 최신 main으로 재작성되면 이 ancestry도 다시 맞춰야 한다.",
-      "action": "#80 재정렬/병합 후 Planner 고유 commit을 새 Ontology/main ancestry에 재배치 → 검증 → 병합"
-    },
-    {
-      "number": 47,
-      "area": "Mac mini 운영",
-      "status": "waiting",
-      "sequence": "2.1A",
-      "lane": "diagnosis",
-      "decision": "#86 병합 반영 · 최신 main rebase 필요",
-      "summary": "HEAD af6680d…. 최신 main 75c4d8d… 대비 16 commits ahead / 11 commits behind, merge-base 024c708…. 현재 CONFLICTING이며 장기 운영/모델 품질 변경과 이미 main에 들어간 Diagnosis 변경이 함께 보이는 상태다.",
-      "action": "최신 main을 기준으로 운영·Mac mini·CNC/Compressor 고유 변경만 재배치하고 canonical Diagnosis 변경은 main 버전을 우선 보존 → 운영/모델/E2E 재검증. 이 PR은 기존 계획대로 운영 검증용이며 자동 병합 대상으로 보지 않음"
+      "decision": "#80 새 HEAD 반영 필요 · DIRTY",
+      "summary": "HEAD 96b376a…. 기존 자체 CI는 모두 SUCCESS였지만 parent #80이 0f9fa24…로 재작성되면서 현재 GitHub 기준 CONFLICTING / DIRTY. Planner 고유 기능의 신규 blocker가 생긴 것은 아니다.",
+      "action": "#80 review/병합 흐름에 맞춰 Planner 고유 commit을 새 Ontology ancestry 위로 재배치 → 검증 → review"
     },
     {
       "number": 87,
       "area": "Maintenance",
-      "status": "waiting",
+      "status": "review",
       "sequence": "2.1",
       "lane": "diagnosis",
-      "decision": "#86 병합 반영 · 새 Diagnosis ancestry 재구성 필요",
-      "summary": "HEAD 121c017…. 최신 main 75c4d8d… 대비 8 commits ahead / 11 commits behind, merge-base 024c708…. 현재 CONFLICTING이다. Maintenance 고유 closed-loop 이관 자체와 기존 검증 결과가 새 blocker인 것은 아니다.",
-      "action": "merged #86의 canonical Diagnosis를 그대로 보존하며 Maintenance 고유 변경만 최신 main 위로 재배치. 함께 EquipmentCurrentStateQuery/EquipmentStatePatchPort의 demo project 기본값을 공개 cross-domain 계약에서 제거하고 명시적 project scope를 요구하는 회귀 검증 추가 → #88 parent 갱신"
+      "decision": "CI green · Review pending",
+      "summary": "HEAD 5f6bf11…. merged #86의 canonical Diagnosis를 보존하며 Maintenance 고유 commits만 최신 main 위로 재배치했다. EquipmentCurrentStateQuery / EquipmentStatePatchPort와 EquipmentService의 hardcoded demo project 기본값을 제거하고 explicit project scope를 요구하도록 수정. CLEAN / MERGEABLE, 필수 CI 전체 SUCCESS.",
+      "action": "@KOR-GANG / @smmini 작업보고 등록 완료. 최신 HEAD human re-review 대기 → 이후 #88 순서 유지"
     },
     {
       "number": 88,
       "area": "Governance",
-      "status": "waiting",
+      "status": "review",
       "sequence": "2.2",
       "lane": "diagnosis",
-      "decision": "#87 다음 · 현재 parent 기준 CLEAN",
-      "summary": "HEAD 4583ec4…. #87 HEAD 121c017…를 base로 CLEAN / MERGEABLE. canonical Governance service/router와 parent wiring의 기존 검증은 유지되고 있다.",
-      "action": "#87 재정렬/병합 후 Governance 고유 commits를 새 Maintenance/main ancestry에 맞춰 재배치 → 검증 → 병합"
+      "decision": "CI green · Review pending",
+      "summary": "HEAD 6a39a1b…. Governance 고유 3 commits를 새 #87 Maintenance ancestry 위로 재배치했고 migration baseline 충돌도 canonical tree 기준으로 정리했다. CLEAN / MERGEABLE, backend-contract · Fast validation · Architecture · Playwright · Docker 모두 SUCCESS.",
+      "action": "@KOR-GANG / @smmini 작업보고 등록 완료. #87 다음 순서로 최신 HEAD human re-review 대기"
     },
     {
       "number": 89,
       "area": "Dashboard",
-      "status": "waiting",
+      "status": "review",
       "sequence": "2.3",
       "lane": "diagnosis",
-      "decision": "#88 다음 · typed Diagnosis projection 후속 포함",
-      "summary": "HEAD 2bc277b…. #88 base 기준 CLEAN / MERGEABLE. Dashboard read-model 이관은 완료되어 있으나 DiagnosisReadModelQueryPort가 아직 Sequence[dict[str, Any]] 형태이므로 #86 review에서 남긴 typed projection 후속을 이 단계에서 수렴시키는 것이 적절하다.",
-      "action": "#88 ancestry 갱신 후 Dashboard-owned typed Diagnosis read projection을 정의하고 persistence summary row를 화면 read model로 직접 노출하지 않도록 port/adapter/tests 정리 → 검증 → 병합"
+      "decision": "Typed projection 완료 · Review pending",
+      "summary": "HEAD 2a2557a…. 새 #88 ancestry 위 재정렬 후 Dashboard-owned typed Diagnosis read projection을 추가해 persistence summary dict를 화면 계약으로 직접 노출하지 않도록 수렴했다. CI 로그에서 발견된 삭제된 legacy project_context import 3곳도 canonical Project resolver로 수정. CLEAN / MERGEABLE, 필수 CI 전체 SUCCESS.",
+      "action": "@KOR-GANG / @smmini 작업보고 등록 완료. typed projection 포함 최신 HEAD human re-review 대기"
     },
     {
       "number": 90,
       "area": "Report",
-      "status": "waiting",
+      "status": "review",
       "sequence": "2.4",
       "lane": "diagnosis",
-      "decision": "#89 다음 · typed Evidence snapshot 후속 포함",
-      "summary": "HEAD dfa3a85…. #89 base 기준 CLEAN / MERGEABLE. Report 이관은 완료되어 있으나 DiagnosisEvidencePort가 아직 dict snapshot을 반환하므로 Report-owned typed Evidence/report projection으로 고정할 후속이 남아 있다.",
-      "action": "#89 ancestry 갱신 후 Report-owned typed Diagnosis Evidence snapshot을 정의하고 port/composition/tests를 해당 타입으로 수렴 → 검증 → 병합"
+      "decision": "Typed Evidence 완료 · Review pending",
+      "summary": "HEAD 35a143d…. 새 #89 ancestry 위로 Report commits를 재배치하고 DiagnosisEvidencePort를 Report-owned ReportDiagnosisEvidenceSnapshot typed 계약으로 고정했다. raw observation/history/model artifact는 export boundary에 노출하지 않고 필요한 Evidence/factor/activity만 projection하며 PDF 담당 엔지니어 표시도 typed field로 보존. CLEAN / MERGEABLE, 필수 CI 전체 SUCCESS.",
+      "action": "@smmini 작업보고 등록 완료. #89 다음 순서로 typed Evidence 최신 HEAD human re-review 대기"
+    },
+    {
+      "number": 47,
+      "area": "Mac mini 운영",
+      "status": "review",
+      "sequence": "2.A",
+      "lane": "diagnosis",
+      "decision": "운영 재정렬/검증 완료 · Review pending",
+      "summary": "HEAD bb2a01d…. 옛 Diagnosis 중복 commits를 제외하고 Mac mini/CNC/Compressor 운영 고유 11 commits만 최신 main 위로 재배치했다. Architecture/ledger/ratchet와 live/generator/CNC/Compressor 회귀를 통과했고 GitHub 필수 CI도 전체 SUCCESS. CLEAN / MERGEABLE.",
+      "action": "@enjoylonelines / @KOR-GANG / @smmini 작업보고 등록 완료. 운영 변경 범위 최신 HEAD human re-review 대기"
+    },
+    {
+      "number": 95,
+      "area": "Asset detail report contract",
+      "status": "review",
+      "sequence": "3.1",
+      "lane": "cicd",
+      "decision": "Docs HEAD clean · Review pending",
+      "summary": "HEAD 2fa855f…. main 기반 Asset detail report contract 문서 PR. GitHub 기준 CLEAN / MERGEABLE이며 최신 architecture/Fast validation/backend-contract는 SUCCESS, 문서 변경 범위의 Docker/Playwright는 SKIPPED. 이전 workflow attempt의 실패 이력은 있으나 현재 HEAD 최신 검증은 green.",
+      "action": "현재 HEAD 문서 계약 human review 대기. Domain stack과 독립적으로 검토 가능"
+    },
+    {
+      "number": 96,
+      "area": "Recommendation policy / Gold seed plan",
+      "status": "review",
+      "sequence": "3.2",
+      "lane": "cicd",
+      "decision": "Docs HEAD clean · Review pending",
+      "summary": "HEAD b617fb6…. 추천 정책 v1과 Gold seed 계획 문서 PR. GitHub 기준 CLEAN / MERGEABLE, architecture · Fast validation · backend-contract SUCCESS이며 문서 scope의 Docker/Playwright는 SKIPPED. 아직 submitted human review는 없다.",
+      "action": "@smmini가 conversation에 참여한 상태. 현재 HEAD human review 대기"
     },
     {
       "number": 92,
       "area": "Final convergence",
-      "status": "waiting",
-      "sequence": "3.1",
+      "status": "blocked",
+      "sequence": "4.1",
       "lane": "final",
-      "decision": "Domain stack 뒤 최신 main 재정렬",
-      "summary": "HEAD d1bc2fa…. 이전 전체 검증은 green이었지만 main이 #81/#86까지 전진해 현재 CONFLICTING. Final convergence 자체의 기존 strict architecture/RLS 수정은 별도 신규 blocker가 아니다.",
-      "action": "#80/#84 및 #87→#90의 domain stack을 먼저 main에 반영 → 최신 main으로 final convergence rebase → backend-contract/Fast validation/Architecture/Playwright/Docker 전체 재검증"
+      "decision": "Domain stack 선행 · DIRTY",
+      "summary": "HEAD d1bc2fa…. 기존 HEAD의 backend-contract/Fast validation/Architecture/Playwright/Docker 이력은 SUCCESS지만 최신 main과 domain stack이 전진해 현재 CONFLICTING / DIRTY. Final convergence 자체의 이전 strict architecture/RLS 수정이 신규 blocker인 것은 아니다.",
+      "action": "#80/#84 및 #87→#90 반영 후 최신 main으로 final convergence 재배치 → 전체 CI 재검증 → final review"
     },
     {
       "number": 85,
       "area": "CI regression",
       "status": "hold",
-      "sequence": "4.1",
+      "sequence": "5.1",
       "lane": "later",
-      "decision": "후반 보류 · final strict gate와 중복 재판단",
-      "summary": "HEAD d9fd5a9…. 현재 CLEAN / MERGEABLE이며 migration/metrics regression follow-up 범위다. Domain convergence가 계속 진행 중이므로 즉시 병합 우선순위는 낮다.",
-      "action": "Domain/Composition 수렴 후 #92/final strict gate와 중복 여부를 보고 병합 또는 흡수/close 결정"
+      "decision": "CLEAN + green · 의도적 Hold",
+      "summary": "HEAD d9fd5a9…. migration/metrics regression follow-up이며 GitHub 기준 CLEAN / MERGEABLE, 필수 CI 전체 SUCCESS. 다만 #92 final strict gate와 기능 중복 가능성이 있어 즉시 병합 대상으로 두지 않는다.",
+      "action": "Domain/Composition 수렴 후 #92와 중복 여부를 비교해 병합 / 흡수 / close 결정"
     }
   ]
 }
