@@ -211,6 +211,27 @@ function CommitInspector({ repo, detail, loading, selectedFile, onFile, fileCont
 function statusLabel(status: PullRequestModel["status"]) { return status === "NEEDS_REVIEW" ? "NEEDS REVIEW" : status; }
 function statusClass(status: PullRequestModel["status"]) { return status.toLowerCase().replace("_", "-"); }
 
+function reviewSignals(pull: PullRequestInput) {
+  const human = pull.reviews.filter((review) => !review.isBot && !review.user.endsWith("[bot]"));
+  const bots = pull.reviews.filter((review) => review.isBot || review.user.endsWith("[bot]"));
+  const latestHuman = new Map<string, (typeof human)[number]>();
+  for (const review of human) latestHuman.set(review.user, review);
+  const states = [...latestHuman.values()].map((review) => review.state.toUpperCase());
+  const humanLabel = states.includes("CHANGES_REQUESTED")
+    ? "CHANGES"
+    : states.includes("APPROVED")
+      ? "APPROVED"
+      : "PENDING";
+  const latestBot = bots.at(-1);
+  const body = (latestBot?.body ?? "").toLowerCase();
+  const autoLabel = !latestBot
+    ? "—"
+    : /not ready|\[p[01]\]|unresolved|issues? found/.test(body)
+      ? "ISSUES"
+      : "REVIEWED";
+  return { humanLabel, autoLabel };
+}
+
 function lifecycleLabel(pull: { lifecycle?: "open" | "merged" | "closed"; draft: boolean }) {
   if (pull.lifecycle === "merged") return "MERGED";
   if (pull.lifecycle === "closed") return "CLOSED";
@@ -291,8 +312,8 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }
     y: index * PR_ROW_HEIGHT + PR_ROW_HEIGHT / 2,
   }]));
   return <div className="pr-graph-table" data-testid="pr-graph" data-edge-count={visibleRelations.length}>
-    <div className="pr-graph-head" style={{ gridTemplateColumns: `${width}px minmax(360px,1fr) minmax(220px,.55fr) 118px 110px` }}>
-      <span>Graph</span><span>Pull request</span><span>Branch</span><span>State</span><span>Updated</span>
+    <div className="pr-graph-head" style={{ gridTemplateColumns: `${width}px minmax(330px,1fr) 130px minmax(190px,.5fr) 132px 110px` }}>
+      <span>Graph</span><span>Pull request</span><span>Author</span><span>Branch</span><span>Review / State</span><span>Updated</span>
     </div>
     <div className="pr-graph-body">
       <div className="pr-graph-svg" style={{ width }}><svg width={width} height={height} aria-hidden="true">
@@ -318,10 +339,12 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }
           const flow = flowByNumber.get(pull.number);
           const deps = upstream.get(pull.number) ?? [];
           const blocks = downstream.get(pull.number) ?? [];
+          const reviews = reviewSignals(pull);
           return <button key={pull.number} className={`pr-graph-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
             <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span><span className="pr-title-text">{pull.title}</span>{deps.length > 0 && <span className="relation-chip">after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span className="relation-chip impact">blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}</div>
+            <span className="pr-author">{pull.author}</span>
             <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
-            <span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}{flow && <small>{statusLabel(flow.status)}</small>}</span>
+            <span className="pr-review-state"><span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}</span>{flow && <><small className={`auto-review auto-${reviews.autoLabel.toLowerCase()}`}>AUTO {reviews.autoLabel}</small><small className={`human-review human-${reviews.humanLabel.toLowerCase()}`}>HUMAN {reviews.humanLabel}</small></>}</span>
             <time>{shortDate(pull.updatedAt)}</time>
           </button>;
         })}
@@ -347,16 +370,18 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect }:
   }
   const ordered = [...pulls].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
   return <div className="pr-list" data-testid="pr-list">
-    <div className="pr-list-head"><span>Pull request</span><span>Branch</span><span>Relations</span><span>State</span><span>Updated</span></div>
+    <div className="pr-list-head"><span>Pull request</span><span>Author</span><span>Branch</span><span>Relations</span><span>Review / State</span><span>Updated</span></div>
     {ordered.map((pull) => {
       const deps = upstream.get(pull.number) ?? [];
       const blocks = downstream.get(pull.number) ?? [];
       const flow = flowByNumber.get(pull.number);
+      const reviews = reviewSignals(pull);
       return <button key={pull.number} className={`pr-list-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
         <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span><span className="pr-title-text">{pull.title}</span></div>
+        <span className="pr-author">{pull.author}</span>
         <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
         <span className="pr-relations">{deps.length > 0 && <span>after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span>blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}{deps.length === 0 && blocks.length === 0 && <i>—</i>}</span>
-        <span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}{flow && <small>{statusLabel(flow.status)}</small>}</span>
+        <span className="pr-review-state"><span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}</span>{flow && <><small className={`auto-review auto-${reviews.autoLabel.toLowerCase()}`}>AUTO {reviews.autoLabel}</small><small className={`human-review human-${reviews.humanLabel.toLowerCase()}`}>HUMAN {reviews.humanLabel}</small></>}</span>
         <time>{shortDate(pull.updatedAt)}</time>
       </button>;
     })}
@@ -434,6 +459,7 @@ export function App() {
   const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
   const [showPullGraph, setShowPullGraph] = useState(false);
   const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
+  const [liveConnected, setLiveConnected] = useState(false);
 
   useEffect(() => { loadRepositories().then((items) => { setRepos(items); setRepo((current) => current || items[0] || ""); }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
   async function refresh(target: string, force = false) {
@@ -444,6 +470,31 @@ export function App() {
     finally { setLoading(false); }
   }
   useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); void refresh(repo); } }, [repo]);
+
+  useEffect(() => {
+    if (!repo) return;
+    const params = new URLSearchParams({ repo });
+    const source = new EventSource(`/dev_dashboard/api/events?${params}`);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    source.onopen = () => setLiveConnected(true);
+    source.onerror = () => setLiveConnected(false);
+    source.addEventListener("github", (raw) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void refresh(repo);
+        if (selectedPull) {
+          void loadPull(repo, selectedPull).then(setPullDetail).catch(() => undefined);
+        }
+      }, 350);
+    });
+    const fallback = window.setInterval(() => void refresh(repo), 60_000);
+    return () => {
+      source.close();
+      if (timer) clearTimeout(timer);
+      window.clearInterval(fallback);
+      setLiveConnected(false);
+    };
+  }, [repo, selectedPull]);
 
   async function inspectCommit(commit: CommitRecord) {
     setSelectedCommit(commit.sha); setCommitLoading(true); setCommitDetail(null); setSelectedFile(null); setFileContent(null); setFileMode("diff");
@@ -514,7 +565,7 @@ export function App() {
     <header className="app-titlebar">
       <div className="app-mark"><GitBranch size={15}/><strong>Dev Flow</strong></div>
       <div className="repo-picker"><select aria-label="Repository" value={repo} onChange={(event) => setRepo(event.target.value)}>{repos.map((item) => <option key={item}>{item}</option>)}</select></div>
-      <div className="title-actions"><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
+      <div className="title-actions"><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
     </header>
 
     <div className="app-toolbar">
