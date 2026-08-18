@@ -126,7 +126,7 @@ function CommitGraph({ commits, headSha, defaultBranch, selected, onSelect, quer
 
   return <div className="commit-table" data-testid="commit-graph" style={{ minWidth: `${tableWidth}px`, width: `${tableWidth}px` }}>
     <div className="commit-table-head" style={{ gridTemplateColumns: headerTemplate }}>
-      {headers.map((label, index) => <span key={label} className="commit-column-head">{label}{index < headers.length - 1 && <i className="column-resizer" onPointerDown={(event) => { event.preventDefault(); startColumnResize(index, event.clientX); }}/>}</span>)}
+      {headers.map((label, index) => <span key={label} className="commit-column-head">{label}<i className="column-resizer" onPointerDown={(event) => { event.preventDefault(); startColumnResize(index, event.clientX); }}/></span>)}
     </div>
     <div className="commit-table-body">
       <div className="commit-svg" style={{ width }}>
