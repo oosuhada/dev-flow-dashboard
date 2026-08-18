@@ -4,7 +4,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Code2,
   ExternalLink,
   FileCode2,
@@ -17,8 +19,10 @@ import {
   GitMerge,
   GitPullRequest,
   MessageSquare,
+  Moon,
   RefreshCw,
   Search,
+  Sun,
   Tag,
   X,
 } from "lucide-react";
@@ -238,40 +242,80 @@ function lifecycleLabel(pull: { lifecycle?: "open" | "merged" | "closed"; draft:
   return pull.draft ? "DRAFT" : "OPEN";
 }
 
-function orderPullsForGraph(pulls: PullRequestInput[], relations: PullRelation[]) {
+type PullSort = "flow" | "updated" | "number";
+
+function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: PullSort) {
+  if (sort === "updated") {
+    return [...pulls].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
+  }
+  if (sort === "number") return [...pulls].sort((a, b) => b.number - a.number);
+
   const byNumber = new Map(pulls.map((pull) => [pull.number, pull]));
-  const indegree = new Map(pulls.map((pull) => [pull.number, 0]));
-  const children = new Map<number, number[]>();
+  const visible = new Set(byNumber.keys());
+  const outgoing = new Map<number, number[]>();
+  const incoming = new Map<number, number[]>();
+  const undirected = new Map<number, number[]>();
   for (const edge of relations) {
-    if (!byNumber.has(edge.source) || !byNumber.has(edge.target)) continue;
-    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
-    children.set(edge.source, [...(children.get(edge.source) ?? []), edge.target]);
+    if (!visible.has(edge.source) || !visible.has(edge.target)) continue;
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source]);
+    undirected.set(edge.source, [...(undirected.get(edge.source) ?? []), edge.target]);
+    undirected.set(edge.target, [...(undirected.get(edge.target) ?? []), edge.source]);
   }
-  const ready = pulls.filter((pull) => (indegree.get(pull.number) ?? 0) === 0);
-  const ordered: PullRequestInput[] = [];
-  const emitted = new Set<number>();
-  while (ready.length) {
-    ready.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
-    const pull = ready.shift()!;
-    if (emitted.has(pull.number)) continue;
-    emitted.add(pull.number); ordered.push(pull);
-    for (const child of children.get(pull.number) ?? []) {
-      indegree.set(child, (indegree.get(child) ?? 1) - 1);
-      if ((indegree.get(child) ?? 0) === 0) ready.push(byNumber.get(child)!);
+
+  const seen = new Set<number>();
+  const components: PullRequestInput[][] = [];
+  for (const pull of pulls) {
+    if (seen.has(pull.number)) continue;
+    const numbers: number[] = [];
+    const queue = [pull.number];
+    while (queue.length) {
+      const current = queue.shift()!;
+      if (seen.has(current)) continue;
+      seen.add(current); numbers.push(current);
+      queue.push(...(undirected.get(current) ?? []));
     }
+
+    const inComponent = new Set(numbers);
+    const indegree = new Map(numbers.map((number) => [
+      number,
+      (incoming.get(number) ?? []).filter((source) => inComponent.has(source)).length,
+    ]));
+    const ready = numbers.filter((number) => (indegree.get(number) ?? 0) === 0);
+    const ordered: PullRequestInput[] = [];
+    const emitted = new Set<number>();
+    while (ready.length) {
+      ready.sort((a, b) => new Date(byNumber.get(b)!.updatedAt).getTime() - new Date(byNumber.get(a)!.updatedAt).getTime() || a - b);
+      const number = ready.shift()!;
+      if (emitted.has(number)) continue;
+      emitted.add(number); ordered.push(byNumber.get(number)!);
+      for (const child of outgoing.get(number) ?? []) {
+        if (!inComponent.has(child)) continue;
+        indegree.set(child, (indegree.get(child) ?? 1) - 1);
+        if ((indegree.get(child) ?? 0) === 0) ready.push(child);
+      }
+    }
+    for (const number of numbers) if (!emitted.has(number)) ordered.push(byNumber.get(number)!);
+    components.push(ordered);
   }
-  const leftovers = pulls.filter((pull) => !emitted.has(pull.number)).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  return [...ordered, ...leftovers];
+
+  components.sort((a, b) => {
+    const aLatest = Math.max(...a.map((pull) => new Date(pull.updatedAt).getTime()));
+    const bLatest = Math.max(...b.map((pull) => new Date(pull.updatedAt).getTime()));
+    return bLatest - aLatest || Math.max(...b.map((pull) => pull.number)) - Math.max(...a.map((pull) => pull.number));
+  });
+  return components.flat();
 }
 
-function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }: {
+function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, sort }: {
   pulls: PullRequestInput[];
   relations: PullRelation[];
   flowByNumber: Map<number, PullRequestModel>;
   selected: number | null;
   onSelect: (value: number) => void;
+  sort: PullSort;
 }) {
-  const ordered = useMemo(() => orderPullsForGraph(pulls, relations), [pulls, relations]);
+  const ordered = useMemo(() => orderPulls(pulls, relations, sort), [pulls, relations, sort]);
   const visibleNumbers = useMemo(() => new Set(ordered.map((pull) => pull.number)), [ordered]);
   const visibleRelations = useMemo(() => relations.filter((edge) => visibleNumbers.has(edge.source) && visibleNumbers.has(edge.target)), [relations, visibleNumbers]);
   const upstream = new Map<number, number[]>();
@@ -353,12 +397,13 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }
   </div>;
 }
 
-function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect }: {
+function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, sort }: {
   pulls: PullRequestInput[];
   relations: PullRelation[];
   flowByNumber: Map<number, PullRequestModel>;
   selected: number | null;
   onSelect: (value: number) => void;
+  sort: PullSort;
 }) {
   const visibleNumbers = new Set(pulls.map((pull) => pull.number));
   const upstream = new Map<number, number[]>();
@@ -368,7 +413,7 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect }:
     upstream.set(edge.target, [...(upstream.get(edge.target) ?? []), edge.source]);
     downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target]);
   }
-  const ordered = [...pulls].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
+  const ordered = orderPulls(pulls, relations, sort);
   return <div className="pr-list" data-testid="pr-list">
     <div className="pr-list-head"><span>Pull request</span><span>Author</span><span>Branch</span><span>Relations</span><span>Review / State</span><span>Updated</span></div>
     {ordered.map((pull) => {
@@ -401,6 +446,33 @@ function eventText(event: PullDetail["events"][number]) {
   return event.event.replaceAll("_", " ");
 }
 
+function markdownPreview(body: string) {
+  return body
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/[`#>*_\[\]()~-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function CollapsibleMarkdownCard({ className, header, body, extra, defaultExpanded = false }: {
+  className: string;
+  header: ReactNode;
+  body: string;
+  extra?: ReactNode;
+  defaultExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded || body.length <= 180);
+  const preview = markdownPreview(body);
+  return <article className={className}>
+    <header>{header}<button className="collapse-toggle" onClick={() => setExpanded((value) => !value)} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse" : "Expand"}>{expanded ? <ChevronUp size={13}/> : <ChevronDown size={13}/>}</button></header>
+    {expanded
+      ? <><div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{body || "No description provided."}</ReactMarkdown></div>{extra}</>
+      : <button className="collapsed-preview" onClick={() => setExpanded(true)}><span>{preview || "No text content"}</span><small>Expand</small></button>
+    }
+  </article>;
+}
+
 function PullRequestInspector({ repo, detail, loading, tab, setTab, onClose }: {
   repo: string; detail: PullDetail | null; loading: boolean; tab: "conversation" | "commits" | "checks";
   setTab: (tab: "conversation" | "commits" | "checks") => void; onClose: () => void;
@@ -423,12 +495,12 @@ function PullRequestInspector({ repo, detail, loading, tab, setTab, onClose }: {
     <div className="pr-inspector-tabs"><button className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}><MessageSquare size={12}/>Conversation</button><button className={tab === "commits" ? "active" : ""} onClick={() => setTab("commits")}><GitCommit size={12}/>Commits <span>{detail.commits.length}</span></button><button className={tab === "checks" ? "active" : ""} onClick={() => setTab("checks")}>Checks <span>{detail.checks.length}</span></button></div>
     <div className="pr-inspector-body">
       {tab === "conversation" && <>
-        <article className="pr-body-card"><header><strong>{detail.author}</strong><span>opened this pull request · {shortDate(detail.createdAt)}</span></header><div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.body || "No description provided."}</ReactMarkdown></div></article>
+        <CollapsibleMarkdownCard className="pr-body-card" body={detail.body || "No description provided."} header={<><strong>{detail.author}</strong><span>opened this pull request · {shortDate(detail.createdAt)}</span></>}/>
         <div className="activity-list">{activities.map((activity, index) => {
           if (activity.kind === "event") return <div key={`event-${activity.item.id}-${index}`} className="activity-event"><span className="activity-dot"/><strong>{activity.item.actor}</strong><span>{eventText(activity.item)}</span><time>{activity.at ? shortDate(activity.at) : ""}</time></div>;
-          if (activity.kind === "review") return <article key={`review-${activity.item.id}-${index}`} className="activity-card review-card"><header><strong>{activity.item.user}</strong><span className={`review-state review-${activity.item.state.toLowerCase()}`}>{activity.item.state.replaceAll("_", " ")}</span><time>{activity.at ? shortDate(activity.at) : ""}</time></header>{activity.item.body && <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.item.body}</ReactMarkdown></div>}</article>;
+          if (activity.kind === "review") return <CollapsibleMarkdownCard key={`review-${activity.item.id}-${index}`} className="activity-card review-card" body={activity.item.body || activity.item.state.replaceAll("_", " ")} header={<><strong>{activity.item.user}</strong><span className={`review-state review-${activity.item.state.toLowerCase()}`}>{activity.item.state.replaceAll("_", " ")}</span><time>{activity.at ? shortDate(activity.at) : ""}</time></>}/>;
           const comment = activity.item as PullReviewComment;
-          return <article key={`${activity.kind}-${comment.id}-${index}`} className="activity-card"><header><strong>{comment.user}</strong>{activity.kind === "review-comment" && <span className="path-chip">{comment.path}{comment.line ? `:${comment.line}` : ""}</span>}<time>{activity.at ? shortDate(activity.at) : ""}</time></header><div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{comment.body}</ReactMarkdown></div>{activity.kind === "review-comment" && comment.diffHunk && <code className="diff-hunk">{comment.diffHunk.split("\n").slice(0, 5).join("\n")}</code>}</article>;
+          return <CollapsibleMarkdownCard key={`${activity.kind}-${comment.id}-${index}`} className="activity-card" body={comment.body} header={<><strong>{comment.user}</strong>{activity.kind === "review-comment" && <span className="path-chip">{comment.path}{comment.line ? `:${comment.line}` : ""}</span>}<time>{activity.at ? shortDate(activity.at) : ""}</time></>} extra={activity.kind === "review-comment" && comment.diffHunk ? <code className="diff-hunk">{comment.diffHunk.split("\n").slice(0, 5).join("\n")}</code> : undefined}/>;
         })}</div>
       </>}
       {tab === "commits" && <div className="pr-commit-list">{detail.commits.map((commit) => <a key={commit.sha} href={commit.url ?? undefined} target="_blank" rel="noreferrer"><span className="commit-node-mini"/><div><strong>{commit.message.split("\n", 1)[0]}</strong><span>{commit.author} · {commit.timestamp ? shortDate(commit.timestamp) : ""}</span></div><code>{commit.sha.slice(0, 7)}</code></a>)}</div>}
@@ -438,6 +510,11 @@ function PullRequestInspector({ repo, detail, loading, tab, setTab, onClose }: {
 }
 
 export function App() {
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const saved = window.localStorage.getItem("dev-flow-theme");
+    if (saved === "dark" || saved === "light") return saved;
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  });
   const [repos, setRepos] = useState<string[]>([]);
   const [repo, setRepo] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -457,9 +534,16 @@ export function App() {
   const [pullLoading, setPullLoading] = useState(false);
   const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
   const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
+  const [pullSort, setPullSort] = useState<PullSort>("flow");
   const [showPullGraph, setShowPullGraph] = useState(false);
   const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
   const [liveConnected, setLiveConnected] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem("dev-flow-theme", theme);
+  }, [theme]);
 
   useEffect(() => { loadRepositories().then((items) => { setRepos(items); setRepo((current) => current || items[0] || ""); }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
   async function refresh(target: string, force = false) {
@@ -565,7 +649,7 @@ export function App() {
     <header className="app-titlebar">
       <div className="app-mark"><GitBranch size={15}/><strong>Dev Flow</strong></div>
       <div className="repo-picker"><select aria-label="Repository" value={repo} onChange={(event) => setRepo(event.target.value)}>{repos.map((item) => <option key={item}>{item}</option>)}</select></div>
-      <div className="title-actions"><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
+      <div className="title-actions"><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
     </header>
 
     <div className="app-toolbar">
@@ -576,6 +660,7 @@ export function App() {
     {tab === "pulls" && <div className="pr-filterbar">
       <div className="pr-state-filters">{(["all", "open", "merged", "closed"] as const).map((state) => <button key={state} className={pullFilter === state ? "active" : ""} onClick={() => { setPullFilter(state); if (showPullGraph && state !== "all") setPullGraphScope("filtered"); }}>{state[0].toUpperCase() + state.slice(1)} <span>{pullCounts[state]}</span></button>)}</div>
       <div className="pr-view-controls">
+        <label className="pr-sort-control"><span>Sort</span><select value={pullSort} onChange={(event) => setPullSort(event.target.value as PullSort)}><option value="flow">Flow groups</option><option value="updated">Recently updated</option><option value="number">PR number</option></select></label>
         {showPullGraph && <div className="pr-graph-scope"><button className={pullGraphScope === "active" ? "active" : ""} onClick={() => setPullGraphScope("active")}>Active + linked</button><button className={pullGraphScope === "filtered" ? "active" : ""} onClick={() => setPullGraphScope("filtered")}>Current filter</button></div>}
         <button className={`relations-toggle ${showPullGraph ? "active" : ""}`} onClick={() => setShowPullGraph((value) => !value)}><GitMerge size={12}/>{showPullGraph ? "Hide relations" : "Show relations"}</button>
       </div>
@@ -601,6 +686,7 @@ export function App() {
               flowByNumber={flowByNumber}
               selected={selectedPull}
               onSelect={(number) => void inspectPull(number)}
+              sort={pullSort}
             />
           : <PullRequestList
               pulls={visiblePulls}
@@ -608,6 +694,7 @@ export function App() {
               flowByNumber={flowByNumber}
               selected={selectedPull}
               onSelect={(number) => void inspectPull(number)}
+              sort={pullSort}
             />
         )}
       </div>
