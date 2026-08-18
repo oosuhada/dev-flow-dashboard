@@ -24,6 +24,13 @@ aggregator = GitHubAggregator()
 _watch_task: asyncio.Task[None] | None = None
 
 
+def _watch_interval_seconds() -> int:
+    try:
+        return max(30, min(600, int(os.getenv("GITHUB_WATCH_INTERVAL_SECONDS", "120"))))
+    except ValueError:
+        return 120
+
+
 def _webhook_secret() -> str:
     return os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
@@ -51,7 +58,7 @@ async def _watch_github() -> None:
                 # A transient GitHub error must not kill the watcher; the next
                 # interval retries and the browser also reconnects SSE itself.
                 pass
-        await asyncio.sleep(12)
+        await asyncio.sleep(_watch_interval_seconds())
 
 
 @app.on_event("startup")
@@ -81,6 +88,8 @@ async def health() -> dict[str, object]:
         "repositories": configured_repositories(),
         "githubAuthentication": "authenticated" if aggregator.authenticated else "public",
         "cacheTtlSeconds": aggregator.cache.ttl_seconds,
+        "liveUpdates": "github-webhook+sse",
+        "watcherFallbackSeconds": _watch_interval_seconds(),
     }
 
 
