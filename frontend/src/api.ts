@@ -174,6 +174,21 @@ export type AIChatResponse = {
   generatedAt: string;
 };
 
+export type ActivityItem = {
+  id: number;
+  createdAt: string;
+  source: "github" | "ai_pm" | string;
+  repository: string;
+  event: string;
+  action?: string | null;
+  number?: number | null;
+  actor?: string | null;
+  title: string;
+  summary?: string | null;
+  url?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 async function json<T>(url: string): Promise<T> {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
   if (!response.ok) {
@@ -230,4 +245,9 @@ export async function askAIProject(question: string, history: AIChatMessage[]): 
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json() as Promise<AIChatResponse>;
+}
+
+export async function loadActivity(limit = 300): Promise<ActivityItem[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return (await json<{ items: ActivityItem[] }>(`${API_BASE}/activity?${params}`)).items;
 }
