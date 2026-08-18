@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .ai import ai_advisor
 from .events import DashboardEvent, event_hub
 from .github import GitHubAggregator, configured_repositories
 
@@ -22,6 +23,8 @@ app = FastAPI(
 )
 aggregator = GitHubAggregator()
 _watch_task: asyncio.Task[None] | None = None
+_background_tasks: set[asyncio.Task[None]] = set()
+_ci_ai_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 def _watch_interval_seconds() -> int:
@@ -54,6 +57,7 @@ async def _watch_github() -> None:
                 if previous is not None and current != previous:
                     aggregator.cache.clear(repo)
                     event_hub.publish(DashboardEvent(repo=repo, event="repository_changed"))
+                    _schedule_ai(repo, "repository_changed", "fallback-watch", None)
             except (RuntimeError, ValueError):
                 # A transient GitHub error must not kill the watcher; the next
                 # interval retries and the browser also reconnects SSE itself.
@@ -61,11 +65,67 @@ async def _watch_github() -> None:
         await asyncio.sleep(_watch_interval_seconds())
 
 
+async def _run_ai_analysis(repo: str, event_name: str, action: str | None, number: int | None) -> None:
+    if not ai_advisor.available:
+        return
+    try:
+        # GitHub can emit the webhook a fraction before all related REST
+        # resources settle. A short delay keeps the AI input coherent while
+        # still feeling immediate in the dashboard.
+        if event_name not in {"startup", "repository_changed"}:
+            await asyncio.sleep(0.8)
+        snapshot_data = await aggregator.snapshot(repo, force=True)
+        pull_detail_data = None
+        if number is not None:
+            try:
+                pull_detail_data = await aggregator.pull_detail(repo, number)
+            except (RuntimeError, ValueError):
+                pull_detail_data = None
+        await ai_advisor.analyze_repository(
+            repo,
+            snapshot_data,
+            {"event": event_name, "action": action, "number": number},
+            pull_detail_data,
+        )
+        event_hub.publish(DashboardEvent(repo=repo, event="ai_analysis", action="completed", number=number))
+    except Exception:
+        # AI is advisory. A provider/API failure must never break GitHub event
+        # ingestion or the deterministic dashboard.
+        event_hub.publish(DashboardEvent(repo=repo, event="ai_analysis", action="failed", number=number))
+
+
+def _schedule_ai(repo: str, event_name: str, action: str | None, number: int | None) -> None:
+    if not ai_advisor.available:
+        return
+    if event_name in {"check_run", "check_suite", "workflow_run"}:
+        previous = _ci_ai_tasks.get(repo)
+        if previous is not None and not previous.done():
+            previous.cancel()
+
+        async def after_ci_burst() -> None:
+            try:
+                await asyncio.sleep(2.5)
+                await _run_ai_analysis(repo, "ci_status_changed", f"{event_name}:{action or 'updated'}", number)
+            except asyncio.CancelledError:
+                return
+
+        task = asyncio.create_task(after_ci_burst())
+        _ci_ai_tasks[repo] = task
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        return
+    task = asyncio.create_task(_run_ai_analysis(repo, event_name, action, number))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @app.on_event("startup")
 async def start_github_watcher() -> None:
     global _watch_task
     if _watch_task is None or _watch_task.done():
         _watch_task = asyncio.create_task(_watch_github())
+    for repo in configured_repositories():
+        _schedule_ai(repo, "startup", "initial-sync", None)
 
 
 @app.on_event("shutdown")
@@ -78,6 +138,13 @@ async def stop_github_watcher() -> None:
         except asyncio.CancelledError:
             pass
         _watch_task = None
+    tasks = list(_background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.clear()
+    _ci_ai_tasks.clear()
 
 
 @app.get("/api/health")
@@ -90,6 +157,12 @@ async def health() -> dict[str, object]:
         "cacheTtlSeconds": aggregator.cache.ttl_seconds,
         "liveUpdates": "github-webhook+sse",
         "watcherFallbackSeconds": _watch_interval_seconds(),
+        "ai": {
+            "enabled": ai_advisor.available,
+            "model": ai_advisor.model,
+            "project": ai_advisor.project if ai_advisor.available else None,
+            "triggerMode": ai_advisor.trigger_mode,
+        },
     }
 
 
@@ -117,7 +190,8 @@ async def events(repo: str = Query(...)) -> StreamingResponse:
                     continue
                 if event.repo != repo:
                     continue
-                yield f"event: github\ndata: {event.encode()}\n\n"
+                channel = "ai" if event.event == "ai_analysis" else "github"
+                yield f"event: {channel}\ndata: {event.encode()}\n\n"
         finally:
             event_hub.unsubscribe(queue)
 
@@ -159,7 +233,47 @@ async def github_webhook(request: Request) -> dict[str, object]:
 
     aggregator.cache.clear(repo)
     event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
+    if event_name != "ping":
+        _schedule_ai(repo, event_name, action, number)
     return {"accepted": True, "repo": repo, "event": event_name, "number": number}
+
+
+@app.get("/api/ai/priority")
+@app.get(f"{DASHBOARD_PREFIX}/api/ai/priority")
+async def ai_priority(repo: str = Query(...), force: bool = Query(False)) -> dict[str, object]:
+    if repo not in configured_repositories():
+        raise HTTPException(status_code=400, detail="Repository is not configured")
+    if not ai_advisor.available:
+        return {"status": "disabled", "repository": repo, "model": ai_advisor.model}
+    current = ai_advisor.state(repo)
+    if force or current is None:
+        try:
+            snapshot_data = await aggregator.snapshot(repo, force=force)
+            current = await ai_advisor.analyze_repository(
+                repo,
+                snapshot_data,
+                {"event": "manual", "action": "force" if force else "initial", "number": None},
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return current or {"status": "analyzing", "repository": repo, "model": ai_advisor.model}
+
+
+@app.get("/api/ai/commit")
+@app.get(f"{DASHBOARD_PREFIX}/api/ai/commit")
+async def ai_commit(repo: str = Query(...), sha: str = Query(...)) -> dict[str, object]:
+    if not ai_advisor.available:
+        return {"status": "disabled", "repository": repo, "sha": sha, "model": ai_advisor.model}
+    try:
+        commit_data, snapshot_data = await asyncio.gather(
+            aggregator.commit_detail(repo, sha),
+            aggregator.snapshot(repo),
+        )
+        return await ai_advisor.analyze_commit(repo, commit_data, snapshot_data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/snapshot")

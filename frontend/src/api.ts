@@ -80,6 +80,49 @@ export type PullDetail = Omit<PullRequestInput, "reviews" | "checks"> & {
   stats: { commits: number; additions: number; deletions: number; changedFiles: number; comments: number; reviewComments: number };
 };
 
+export type AIPriorityItem = {
+  rank: number;
+  number: number;
+  priority: "P0" | "P1" | "P2" | "P3" | string;
+  score: number;
+  reason: string;
+  nextAction: string;
+  actor: "author" | "reviewer" | "maintainer" | "team" | string;
+  impact: string;
+  confidence: number;
+};
+
+export type AIPriorityState = {
+  status: "ready" | "analyzing" | "disabled" | string;
+  repository: string;
+  model: string;
+  generatedAt?: string;
+  headline?: string;
+  summary?: string;
+  changesSinceLast?: string[];
+  priorities?: AIPriorityItem[];
+  watch?: Array<{ number: number; signal: string }>;
+  contextSummary?: string;
+  trigger?: { event?: string; action?: string | null; number?: number | null };
+  usage?: Record<string, unknown>;
+};
+
+export type AICommitAnalysis = {
+  status: "ready" | "disabled" | string;
+  repository: string;
+  sha: string;
+  model: string;
+  generatedAt?: string;
+  summary?: string;
+  riskLevel?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | string;
+  whyItMatters?: string;
+  affectedAreas?: string[];
+  reviewFocus?: string[];
+  relatedPulls?: number[];
+  recommendedNextStep?: string;
+  confidence?: number;
+};
+
 async function json<T>(url: string): Promise<T> {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
   if (!response.ok) {
@@ -111,4 +154,14 @@ export async function loadPull(repo: string, number: number): Promise<PullDetail
 export async function loadFile(repo: string, sha: string, path: string): Promise<FileContent> {
   const params = new URLSearchParams({ repo, sha, path });
   return json<FileContent>(`${API_BASE}/file?${params}`);
+}
+
+export async function loadAIPriority(repo: string, force = false): Promise<AIPriorityState> {
+  const params = new URLSearchParams({ repo, force: String(force) });
+  return json<AIPriorityState>(`${API_BASE}/ai/priority?${params}`);
+}
+
+export async function loadAICommit(repo: string, sha: string): Promise<AICommitAnalysis> {
+  const params = new URLSearchParams({ repo, sha });
+  return json<AICommitAnalysis>(`${API_BASE}/ai/commit?${params}`);
 }

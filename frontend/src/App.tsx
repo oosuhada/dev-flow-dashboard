@@ -20,6 +20,7 @@ import {
   GitPullRequest,
   MessageSquare,
   Moon,
+  Sparkles,
   RefreshCw,
   Search,
   Sun,
@@ -27,11 +28,15 @@ import {
   X,
 } from "lucide-react";
 import {
+  loadAICommit,
+  loadAIPriority,
   loadCommit,
   loadFile,
   loadPull,
   loadRepositories,
   loadSnapshot,
+  type AICommitAnalysis,
+  type AIPriorityState,
   type CommitDetail,
   type CommitFile,
   type CommitRecord,
@@ -171,7 +176,7 @@ function ChangedFileTree({ files, selectedFile, onFile }: { files: CommitFile[];
   return <>{render(tree)}</>;
 }
 
-function CommitInspector({ repo, detail, loading, selectedFile, onFile, fileContent, fileLoading, mode, setMode, onClose }: {
+function CommitInspector({ repo, detail, loading, selectedFile, onFile, fileContent, fileLoading, mode, setMode, ai, aiLoading, onPullSelect, onClose }: {
   repo: string;
   detail: CommitDetail | null;
   loading: boolean;
@@ -181,6 +186,9 @@ function CommitInspector({ repo, detail, loading, selectedFile, onFile, fileCont
   fileLoading: boolean;
   mode: "diff" | "file";
   setMode: (mode: "diff" | "file") => void;
+  ai: AICommitAnalysis | null;
+  aiLoading: boolean;
+  onPullSelect: (number: number) => void;
   onClose: () => void;
 }) {
   if (loading || !detail) return <aside className="commit-inspector"><div className="inspector-loading">Loading commit…</div></aside>;
@@ -191,6 +199,16 @@ function CommitInspector({ repo, detail, loading, selectedFile, onFile, fileCont
       <div className="commit-subject">{detail.message.split("\n", 1)[0]}</div>
       <div className="commit-meta"><strong>{detail.author}</strong><span>{detail.authoredAt ? new Date(detail.authoredAt).toLocaleString() : ""}</span><a href={detail.htmlUrl} target="_blank" rel="noreferrer">GitHub <ExternalLink size={11}/></a></div>
       <div className="commit-stats"><span>{detail.files.length} files</span><b className="plus">+{detail.stats.additions}</b><b className="minus">−{detail.stats.deletions}</b>{detail.parents.map((parent) => <code key={parent}>parent {parent.slice(0, 7)}</code>)}</div>
+      <div className={`commit-ai ${aiLoading ? "loading" : ""}`}>
+        <div className="commit-ai-head"><Sparkles size={12}/><strong>Gemini Flow Analysis</strong>{ai?.riskLevel && <span className={`ai-risk risk-${ai.riskLevel.toLowerCase()}`}>{ai.riskLevel}</span>}</div>
+        {aiLoading && !ai ? <span className="ai-muted">현재 PR 흐름과 이 커밋의 영향을 분석하는 중…</span> : ai?.status === "ready" ? <>
+          <p>{ai.summary}</p>
+          {ai.whyItMatters && <div className="ai-why"><strong>Why it matters</strong><span>{ai.whyItMatters}</span></div>}
+          {ai.reviewFocus?.length ? <div className="ai-review-focus"><strong>Review focus</strong>{ai.reviewFocus.slice(0, 4).map((item) => <span key={item}>• {item}</span>)}</div> : null}
+          {ai.recommendedNextStep && <div className="ai-next"><strong>Next</strong><span>{ai.recommendedNextStep}</span></div>}
+          {ai.relatedPulls?.length ? <div className="ai-related"><strong>Related PR</strong>{ai.relatedPulls.map((number) => <button key={number} onClick={() => onPullSelect(number)}>#{number}</button>)}</div> : null}
+        </> : <span className="ai-muted">AI analysis unavailable.</span>}
+      </div>
     </div>
     <div className="inspector-workspace">
       <div className="changed-files">
@@ -242,9 +260,9 @@ function lifecycleLabel(pull: { lifecycle?: "open" | "merged" | "closed"; draft:
   return pull.draft ? "DRAFT" : "OPEN";
 }
 
-type PullSort = "flow" | "updated" | "number";
+type PullSort = "ai" | "flow" | "updated" | "number";
 
-function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: PullSort) {
+function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: PullSort, aiRanks = new Map<number, number>()) {
   if (sort === "updated") {
     return [...pulls].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
   }
@@ -285,7 +303,13 @@ function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: 
     const ordered: PullRequestInput[] = [];
     const emitted = new Set<number>();
     while (ready.length) {
-      ready.sort((a, b) => new Date(byNumber.get(b)!.updatedAt).getTime() - new Date(byNumber.get(a)!.updatedAt).getTime() || a - b);
+      ready.sort((a, b) => {
+        if (sort === "ai") {
+          const rankDiff = (aiRanks.get(a) ?? 9999) - (aiRanks.get(b) ?? 9999);
+          if (rankDiff) return rankDiff;
+        }
+        return new Date(byNumber.get(b)!.updatedAt).getTime() - new Date(byNumber.get(a)!.updatedAt).getTime() || a - b;
+      });
       const number = ready.shift()!;
       if (emitted.has(number)) continue;
       emitted.add(number); ordered.push(byNumber.get(number)!);
@@ -300,6 +324,11 @@ function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: 
   }
 
   components.sort((a, b) => {
+    if (sort === "ai") {
+      const aRank = Math.min(...a.map((pull) => aiRanks.get(pull.number) ?? 9999));
+      const bRank = Math.min(...b.map((pull) => aiRanks.get(pull.number) ?? 9999));
+      if (aRank !== bRank) return aRank - bRank;
+    }
     const aLatest = Math.max(...a.map((pull) => new Date(pull.updatedAt).getTime()));
     const bLatest = Math.max(...b.map((pull) => new Date(pull.updatedAt).getTime()));
     return bLatest - aLatest || Math.max(...b.map((pull) => pull.number)) - Math.max(...a.map((pull) => pull.number));
@@ -307,15 +336,16 @@ function orderPulls(pulls: PullRequestInput[], relations: PullRelation[], sort: 
   return components.flat();
 }
 
-function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, sort }: {
+function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, sort, aiRanks }: {
   pulls: PullRequestInput[];
   relations: PullRelation[];
   flowByNumber: Map<number, PullRequestModel>;
   selected: number | null;
   onSelect: (value: number) => void;
   sort: PullSort;
+  aiRanks: Map<number, number>;
 }) {
-  const ordered = useMemo(() => orderPulls(pulls, relations, sort), [pulls, relations, sort]);
+  const ordered = useMemo(() => orderPulls(pulls, relations, sort, aiRanks), [pulls, relations, sort, aiRanks]);
   const visibleNumbers = useMemo(() => new Set(ordered.map((pull) => pull.number)), [ordered]);
   const visibleRelations = useMemo(() => relations.filter((edge) => visibleNumbers.has(edge.source) && visibleNumbers.has(edge.target)), [relations, visibleNumbers]);
   const upstream = new Map<number, number[]>();
@@ -385,7 +415,7 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, 
           const blocks = downstream.get(pull.number) ?? [];
           const reviews = reviewSignals(pull);
           return <button key={pull.number} className={`pr-graph-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
-            <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span><span className="pr-title-text">{pull.title}</span>{deps.length > 0 && <span className="relation-chip">after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span className="relation-chip impact">blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}</div>
+            <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span>{aiRanks.has(pull.number) && <span className="ai-row-rank">AI {aiRanks.get(pull.number)}</span>}<span className="pr-title-text">{pull.title}</span>{deps.length > 0 && <span className="relation-chip">after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span className="relation-chip impact">blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}</div>
             <span className="pr-author">{pull.author}</span>
             <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
             <span className="pr-review-state"><span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}</span>{flow && <><small className={`auto-review auto-${reviews.autoLabel.toLowerCase()}`}>AUTO {reviews.autoLabel}</small><small className={`human-review human-${reviews.humanLabel.toLowerCase()}`}>HUMAN {reviews.humanLabel}</small></>}</span>
@@ -397,13 +427,14 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, 
   </div>;
 }
 
-function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, sort }: {
+function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, sort, aiRanks }: {
   pulls: PullRequestInput[];
   relations: PullRelation[];
   flowByNumber: Map<number, PullRequestModel>;
   selected: number | null;
   onSelect: (value: number) => void;
   sort: PullSort;
+  aiRanks: Map<number, number>;
 }) {
   const visibleNumbers = new Set(pulls.map((pull) => pull.number));
   const upstream = new Map<number, number[]>();
@@ -413,7 +444,7 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
     upstream.set(edge.target, [...(upstream.get(edge.target) ?? []), edge.source]);
     downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target]);
   }
-  const ordered = orderPulls(pulls, relations, sort);
+  const ordered = orderPulls(pulls, relations, sort, aiRanks);
   return <div className="pr-list" data-testid="pr-list">
     <div className="pr-list-head"><span>Pull request</span><span>Author</span><span>Branch</span><span>Relations</span><span>Review / State</span><span>Updated</span></div>
     {ordered.map((pull) => {
@@ -422,7 +453,7 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
       const flow = flowByNumber.get(pull.number);
       const reviews = reviewSignals(pull);
       return <button key={pull.number} className={`pr-list-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
-        <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span><span className="pr-title-text">{pull.title}</span></div>
+        <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span>{aiRanks.has(pull.number) && <span className="ai-row-rank">AI {aiRanks.get(pull.number)}</span>}<span className="pr-title-text">{pull.title}</span></div>
         <span className="pr-author">{pull.author}</span>
         <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
         <span className="pr-relations">{deps.length > 0 && <span>after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span>blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}{deps.length === 0 && blocks.length === 0 && <i>—</i>}</span>
@@ -431,6 +462,35 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
       </button>;
     })}
   </div>;
+}
+
+function AIOperationsPanel({ state, loading, onRefresh, onSelectPull }: {
+  state: AIPriorityState | null;
+  loading: boolean;
+  onRefresh: () => void;
+  onSelectPull: (number: number) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const priorities = state?.priorities ?? [];
+  return <section className={`ai-ops ${collapsed ? "collapsed" : ""}`} data-testid="ai-operations">
+    <div className="ai-ops-head">
+      <div><Sparkles size={13}/><strong>Live AI Operations</strong><span>{state?.model ?? "Gemini 3.7 Flash"}</span>{loading && <small>re-evaluating…</small>}</div>
+      <div>{state?.generatedAt && <time>{shortDate(state.generatedAt)}</time>}<button onClick={onRefresh} title="Re-evaluate now"><RefreshCw size={12}/></button><button onClick={() => setCollapsed((value) => !value)} title={collapsed ? "Expand AI operations" : "Collapse AI operations"}>{collapsed ? <ChevronDown size={13}/> : <ChevronUp size={13}/>}</button></div>
+    </div>
+    {!collapsed && <div className="ai-ops-body">
+      <div className="ai-headline"><span>NOW</span><strong>{state?.headline || (loading ? "GitHub 변화를 Gemini가 다시 판단하고 있습니다…" : "AI priority analysis is starting…")}</strong></div>
+      {state?.summary && <p className="ai-summary">{state.summary}</p>}
+      <div className="ai-priority-grid">
+        {priorities.slice(0, 5).map((item) => <button key={item.number} className="ai-priority-card" onClick={() => onSelectPull(item.number)}>
+          <div><span className="ai-rank">{item.rank}</span><strong>#{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><small>{item.actor}</small></div>
+          <p>{item.nextAction}</p>
+          <span className="ai-reason">{item.reason}</span>
+          {item.impact && <span className="ai-impact">↳ {item.impact}</span>}
+        </button>)}
+      </div>
+      {state?.changesSinceLast?.length ? <div className="ai-changes"><strong>Changed</strong>{state.changesSinceLast.slice(0, 3).map((item) => <span key={item}>{item}</span>)}</div> : null}
+    </div>}
+  </section>;
 }
 
 function eventText(event: PullDetail["events"][number]) {
@@ -525,6 +585,8 @@ export function App() {
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
   const [commitLoading, setCommitLoading] = useState(false);
+  const [commitAI, setCommitAI] = useState<AICommitAnalysis | null>(null);
+  const [commitAILoading, setCommitAILoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContent | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
@@ -534,10 +596,12 @@ export function App() {
   const [pullLoading, setPullLoading] = useState(false);
   const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
   const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
-  const [pullSort, setPullSort] = useState<PullSort>("flow");
+  const [pullSort, setPullSort] = useState<PullSort>("ai");
   const [showPullGraph, setShowPullGraph] = useState(false);
   const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
   const [liveConnected, setLiveConnected] = useState(false);
+  const [aiPriority, setAIPriority] = useState<AIPriorityState | null>(null);
+  const [aiLoading, setAILoading] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -553,7 +617,14 @@ export function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load GitHub data"); }
     finally { setLoading(false); }
   }
-  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); void refresh(repo); } }, [repo]);
+  async function refreshAI(target: string, force = false) {
+    if (!target) return;
+    setAILoading(true);
+    try { setAIPriority(await loadAIPriority(target, force)); }
+    catch { /* AI is advisory; GitHub data remains usable. */ }
+    finally { setAILoading(false); }
+  }
+  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setCommitAI(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); setAIPriority(null); void refresh(repo); void refreshAI(repo); } }, [repo]);
 
   useEffect(() => {
     if (!repo) return;
@@ -563,6 +634,7 @@ export function App() {
     source.onopen = () => setLiveConnected(true);
     source.onerror = () => setLiveConnected(false);
     source.addEventListener("github", (raw) => {
+      setAILoading(true);
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         void refresh(repo);
@@ -571,6 +643,13 @@ export function App() {
         }
       }, 350);
     });
+    source.addEventListener("ai", () => {
+      void loadAIPriority(repo).then((value) => { setAIPriority(value); setAILoading(false); }).catch(() => setAILoading(false));
+      if (selectedCommit) {
+        setCommitAILoading(true);
+        void loadAICommit(repo, selectedCommit).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
+      }
+    });
     const fallback = window.setInterval(() => void refresh(repo), 60_000);
     return () => {
       source.close();
@@ -578,10 +657,11 @@ export function App() {
       window.clearInterval(fallback);
       setLiveConnected(false);
     };
-  }, [repo, selectedPull]);
+  }, [repo, selectedPull, selectedCommit]);
 
   async function inspectCommit(commit: CommitRecord) {
-    setSelectedCommit(commit.sha); setCommitLoading(true); setCommitDetail(null); setSelectedFile(null); setFileContent(null); setFileMode("diff");
+    setSelectedCommit(commit.sha); setCommitLoading(true); setCommitDetail(null); setCommitAI(null); setCommitAILoading(true); setSelectedFile(null); setFileContent(null); setFileMode("diff");
+    void loadAICommit(repo, commit.sha).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
     try {
       const detail = await loadCommit(repo, commit.sha);
       setCommitDetail(detail);
@@ -618,6 +698,7 @@ export function App() {
     { mainBranch: snapshot.defaultBranch, relations: snapshot.pullRelations },
   ) : [], [snapshot]);
   const flowByNumber = useMemo(() => new Map(openPullModels.map((pull) => [pull.number, pull])), [openPullModels]);
+  const aiRanks = useMemo(() => new Map((aiPriority?.priorities ?? []).map((item) => [item.number, item.rank])), [aiPriority]);
   const pullCounts = useMemo(() => {
     const pulls = snapshot?.pulls ?? [];
     return {
@@ -660,11 +741,13 @@ export function App() {
     {tab === "pulls" && <div className="pr-filterbar">
       <div className="pr-state-filters">{(["all", "open", "merged", "closed"] as const).map((state) => <button key={state} className={pullFilter === state ? "active" : ""} onClick={() => { setPullFilter(state); if (showPullGraph && state !== "all") setPullGraphScope("filtered"); }}>{state[0].toUpperCase() + state.slice(1)} <span>{pullCounts[state]}</span></button>)}</div>
       <div className="pr-view-controls">
-        <label className="pr-sort-control"><span>Sort</span><select value={pullSort} onChange={(event) => setPullSort(event.target.value as PullSort)}><option value="flow">Flow groups</option><option value="updated">Recently updated</option><option value="number">PR number</option></select></label>
+        <label className="pr-sort-control"><span>Sort</span><select value={pullSort} onChange={(event) => setPullSort(event.target.value as PullSort)}><option value="ai">AI priority · keep chains</option><option value="flow">Flow groups</option><option value="updated">Recently updated</option><option value="number">PR number</option></select></label>
         {showPullGraph && <div className="pr-graph-scope"><button className={pullGraphScope === "active" ? "active" : ""} onClick={() => setPullGraphScope("active")}>Active + linked</button><button className={pullGraphScope === "filtered" ? "active" : ""} onClick={() => setPullGraphScope("filtered")}>Current filter</button></div>}
         <button className={`relations-toggle ${showPullGraph ? "active" : ""}`} onClick={() => setShowPullGraph((value) => !value)}><GitMerge size={12}/>{showPullGraph ? "Hide relations" : "Show relations"}</button>
       </div>
     </div>}
+
+    {tab === "pulls" && <AIOperationsPanel state={aiPriority} loading={aiLoading} onRefresh={() => void refreshAI(repo, true)} onSelectPull={(number) => void inspectPull(number)}/>}
 
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
@@ -687,6 +770,7 @@ export function App() {
               selected={selectedPull}
               onSelect={(number) => void inspectPull(number)}
               sort={pullSort}
+              aiRanks={aiRanks}
             />
           : <PullRequestList
               pulls={visiblePulls}
@@ -695,6 +779,7 @@ export function App() {
               selected={selectedPull}
               onSelect={(number) => void inspectPull(number)}
               sort={pullSort}
+              aiRanks={aiRanks}
             />
         )}
       </div>
@@ -708,7 +793,10 @@ export function App() {
         fileLoading={fileLoading}
         mode={fileMode}
         setMode={setFileMode}
-        onClose={() => { setSelectedCommit(null); setCommitDetail(null); }}
+        ai={commitAI}
+        aiLoading={commitAILoading}
+        onPullSelect={(number) => { setTab("pulls"); void inspectPull(number); }}
+        onClose={() => { setSelectedCommit(null); setCommitDetail(null); setCommitAI(null); }}
       />}
       {tab === "pulls" && selectedPull && <PullRequestInspector
         repo={repo}
