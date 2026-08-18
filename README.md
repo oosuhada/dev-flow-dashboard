@@ -286,3 +286,7 @@ The commit graph rendering code under `frontend/src/gitgraph/` preserves its MIT
 - **asispts/neo-git-graph** fork lineage
 
 That MIT notice applies to the attributed Git Graph lineage described in that file. This repository currently does not add a separate top-level license grant for the rest of the project source.
+
+## Topics
+
+[`circuit-breaker`](https://github.com/topics/circuit-breaker) · [`developer-tools`](https://github.com/topics/developer-tools) · [`docker`](https://github.com/topics/docker) · [`fastapi`](https://github.com/topics/fastapi) · [`github-api`](https://github.com/topics/github-api) · [`react`](https://github.com/topics/react) · [`sse`](https://github.com/topics/sse) · [`typescript`](https://github.com/topics/typescript)
