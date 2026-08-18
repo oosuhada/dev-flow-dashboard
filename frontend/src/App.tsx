@@ -28,15 +28,17 @@ import {
   X,
 } from "lucide-react";
 import {
+  askAIProject,
   loadAICommit,
-  loadAIPriority,
+  loadAIProject,
   loadCommit,
   loadFile,
   loadPull,
   loadRepositories,
   loadSnapshot,
   type AICommitAnalysis,
-  type AIPriorityState,
+  type AIChatMessage,
+  type AIProjectState,
   type CommitDetail,
   type CommitFile,
   type CommitRecord,
@@ -427,7 +429,7 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect, 
   </div>;
 }
 
-function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, sort, aiRanks }: {
+function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, sort, aiRanks, columnWidths, onColumnWidths }: {
   pulls: PullRequestInput[];
   relations: PullRelation[];
   flowByNumber: Map<number, PullRequestModel>;
@@ -435,6 +437,8 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   onSelect: (value: number) => void;
   sort: PullSort;
   aiRanks: Map<number, number>;
+  columnWidths: [number, number, number, number, number, number];
+  onColumnWidths: (value: [number, number, number, number, number, number]) => void;
 }) {
   const visibleNumbers = new Set(pulls.map((pull) => pull.number));
   const upstream = new Map<number, number[]>();
@@ -445,14 +449,27 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
     downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target]);
   }
   const ordered = orderPulls(pulls, relations, sort, aiRanks);
-  return <div className="pr-list" data-testid="pr-list">
-    <div className="pr-list-head"><span>Pull request</span><span>Author</span><span>Branch</span><span>Relations</span><span>Review / State</span><span>Updated</span></div>
+  const template = columnWidths.map((width) => `${width}px`).join(" ");
+  const minWidths = [260, 90, 140, 100, 160, 90];
+  function startColumnResize(index: number, startX: number) {
+    const startWidth = columnWidths[index];
+    const move = (event: PointerEvent) => {
+      const next = [...columnWidths] as [number, number, number, number, number, number];
+      next[index] = Math.max(minWidths[index], startWidth + event.clientX - startX);
+      onColumnWidths(next);
+    };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  }
+  const headers = ["Pull request", "Author", "Branch", "Relations", "Review / State", "Updated"];
+  return <div className="pr-list" data-testid="pr-list" style={{ minWidth: `${columnWidths.reduce((sum, width) => sum + width, 0)}px` }}>
+    <div className="pr-list-head" style={{ gridTemplateColumns: template }}>{headers.map((label, index) => <span key={label} className="pr-column-head">{label}{index < headers.length - 1 && <i className="column-resizer" onPointerDown={(event) => { event.preventDefault(); startColumnResize(index, event.clientX); }}/>}</span>)}</div>
     {ordered.map((pull) => {
       const deps = upstream.get(pull.number) ?? [];
       const blocks = downstream.get(pull.number) ?? [];
       const flow = flowByNumber.get(pull.number);
       const reviews = reviewSignals(pull);
-      return <button key={pull.number} className={`pr-list-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
+      return <button key={pull.number} style={{ gridTemplateColumns: template }} className={`pr-list-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
         <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span>{aiRanks.has(pull.number) && <span className="ai-row-rank">AI {aiRanks.get(pull.number)}</span>}<span className="pr-title-text">{pull.title}</span></div>
         <span className="pr-author">{pull.author}</span>
         <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
@@ -464,33 +481,62 @@ function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect, s
   </div>;
 }
 
-function AIOperationsPanel({ state, loading, onRefresh, onSelectPull }: {
-  state: AIPriorityState | null;
+function AIProjectSidebar({ state, loading, currentRepo, onRefresh, onSelectPull }: {
+  state: AIProjectState | null;
   loading: boolean;
+  currentRepo: string;
   onRefresh: () => void;
-  onSelectPull: (number: number) => void;
+  onSelectPull: (repository: string, number: number) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const priorities = state?.priorities ?? [];
-  return <section className={`ai-ops ${collapsed ? "collapsed" : ""}`} data-testid="ai-operations">
-    <div className="ai-ops-head">
-      <div><Sparkles size={13}/><strong>Live AI Operations</strong><span>{state?.model ?? "Gemini 3.7 Flash"}</span>{loading && <small>re-evaluating…</small>}</div>
-      <div>{state?.generatedAt && <time>{shortDate(state.generatedAt)}</time>}<button onClick={onRefresh} title="Re-evaluate now"><RefreshCw size={12}/></button><button onClick={() => setCollapsed((value) => !value)} title={collapsed ? "Expand AI operations" : "Collapse AI operations"}>{collapsed ? <ChevronDown size={13}/> : <ChevronUp size={13}/>}</button></div>
-    </div>
-    {!collapsed && <div className="ai-ops-body">
-      <div className="ai-headline"><span>NOW</span><strong>{state?.headline || (loading ? "GitHub 변화를 Gemini가 다시 판단하고 있습니다…" : "AI priority analysis is starting…")}</strong></div>
-      {state?.summary && <p className="ai-summary">{state.summary}</p>}
-      <div className="ai-priority-grid">
-        {priorities.slice(0, 5).map((item) => <button key={item.number} className="ai-priority-card" onClick={() => onSelectPull(item.number)}>
-          <div><span className="ai-rank">{item.rank}</span><strong>#{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><small>{item.actor}</small></div>
-          <p>{item.nextAction}</p>
-          <span className="ai-reason">{item.reason}</span>
-          {item.impact && <span className="ai-impact">↳ {item.impact}</span>}
-        </button>)}
-      </div>
-      {state?.changesSinceLast?.length ? <div className="ai-changes"><strong>Changed</strong>{state.changesSinceLast.slice(0, 3).map((item) => <span key={item}>{item}</span>)}</div> : null}
+  const [tab, setTab] = useState<"pm" | "chat">("pm");
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [messages, setMessages] = useState<AIChatMessage[]>([]);
+  const [suggestions, setSuggestions] = useState<string[]>(["그 다음에 뭐할까?", "지금 가장 큰 병목은 뭐야?", "각 팀원이 지금 해야 할 일 알려줘"]);
+
+  async function sendChat(question = chatInput) {
+    const value = question.trim();
+    if (!value || chatLoading) return;
+    const history = [...messages];
+    setMessages((items) => [...items, { role: "user", content: value }]);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const response = await askAIProject(value, history);
+      setMessages((items) => [...items, { role: "assistant", content: response.answer }]);
+      setSuggestions(response.suggestedQuestions ?? []);
+    } catch (reason) {
+      setMessages((items) => [...items, { role: "assistant", content: reason instanceof Error ? reason.message : "AI PM chat failed" }]);
+    } finally { setChatLoading(false); }
+  }
+
+  return <aside className="ai-sidebar" data-testid="ai-project-manager">
+    <header className="ai-sidebar-head">
+      <div><Sparkles size={13}/><strong>AI Project Manager</strong>{loading && <small>re-evaluating…</small>}</div>
+      <button onClick={onRefresh} title="Re-evaluate now"><RefreshCw size={12}/></button>
+    </header>
+    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => setTab("pm")}>PM</button><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>Chat</button></nav>
+    {tab === "pm" ? <div className="ai-sidebar-scroll">
+      <div className="pm-status-row"><span className={`pm-health health-${(state?.projectHealth ?? "loading").toLowerCase()}`}>{state?.projectHealth ?? "ANALYZING"}</span>{state?.currentStep && <span className="pm-step">Step {state.currentStep.number} · {state.currentStep.name}</span>}</div>
+      <div className="ai-headline"><span>NOW</span><strong>{state?.headline || "Project Manager가 현재 상태를 읽는 중입니다…"}</strong></div>
+      {state?.currentObjective && <div className="pm-objective"><strong>Current objective</strong><span>{state.currentObjective}</span></div>}
+      {state?.healthReason && <p className="ai-summary">{state.healthReason}</p>}
+      <section className="pm-team-list"><h3>Team · NOW</h3>{(state?.teamActions ?? []).map((action) => <article key={action.github} className="pm-team-card">
+        <header><strong>{action.name}</strong><code>@{action.github}</code><span>{action.role}</span></header>
+        <div className="pm-now"><small>NOW</small><strong>{action.now}</strong></div>
+        <p>{action.whyNow}</p>
+        {action.nextHandoff && <div className="pm-handoff"><span>Handoff</span>{action.nextHandoff}</div>}
+        {action.relatedWork?.length ? <div className="pm-related">{action.relatedWork.map((work) => <button key={`${work.repository}-${work.pr}`} onClick={() => onSelectPull(work.repository, work.pr)}>{work.repository === currentRepo ? "PR" : work.repository.split("/").at(-1)} #{work.pr}</button>)}</div> : null}
+      </article>)}</section>
+      {(state?.antiPatternAlerts ?? []).length > 0 && <section className="pm-alerts"><h3>PM warnings</h3>{state?.antiPatternAlerts?.slice(0, 4).map((alert, index) => <article key={`${alert.title}-${index}`} className={`pm-alert severity-${alert.severity}`}><header><AlertTriangle size={11}/><strong>{alert.title}</strong></header><p>{alert.reason}</p><div><span>STOP</span>{alert.stopDoing}</div><div><span>DO</span>{alert.doInstead}</div></article>)}</section>}
+      <section className="pm-queue"><h3>PR queue</h3>{(state?.prPriorities ?? []).slice(0, 10).map((item) => <button key={`${item.repository}-${item.number}`} onClick={() => onSelectPull(item.repository, item.number)}><span className="ai-rank">{item.rank}</span><strong>{item.repository.split("/").at(-1)} #{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><p>{item.nextAction}</p></button>)}</section>
+      {state?.generatedAt && <footer>Gemini 3.7 Flash · {shortDate(state.generatedAt)}</footer>}
+    </div> : <div className="ai-chat">
+      <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={18}/><strong>프로젝트 맥락을 기억하고 있습니다.</strong><span>다음 작업, 병목, 팀원별 역할, PR 우선순위를 물어보세요.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>)}{chatLoading && <div className="ai-chat-thinking">Gemini가 현재 PM 상태를 확인하는 중…</div>}</div>
+      {suggestions.length > 0 && <div className="ai-chat-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void sendChat(suggestion)}>{suggestion}</button>)}</div>}
+      <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="그 다음에 뭐할까?" rows={2}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
     </div>}
-  </section>;
+  </aside>;
 }
 
 function eventText(event: PullDetail["events"][number]) {
@@ -600,8 +646,19 @@ export function App() {
   const [showPullGraph, setShowPullGraph] = useState(false);
   const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
   const [liveConnected, setLiveConnected] = useState(false);
-  const [aiPriority, setAIPriority] = useState<AIPriorityState | null>(null);
+  const [aiProject, setAIProject] = useState<AIProjectState | null>(null);
   const [aiLoading, setAILoading] = useState(false);
+  const [aiPanelOpen, setAIPanelOpen] = useState(() => window.localStorage.getItem("dev-flow-ai-panel") !== "closed");
+  const [aiPanelWidth, setAIPanelWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-ai-width")) || 360);
+  const [inspectorWidth, setInspectorWidth] = useState(() => Number(window.localStorage.getItem("dev-flow-inspector-width")) || 520);
+  const [prColumnWidths, setPrColumnWidths] = useState<[number, number, number, number, number, number]>(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("dev-flow-pr-columns") ?? "null");
+      if (Array.isArray(saved) && saved.length === 6 && saved.every((value) => Number.isFinite(value))) return saved as [number, number, number, number, number, number];
+    } catch { /* use defaults */ }
+    return [420, 120, 220, 160, 220, 110];
+  });
+  const [pendingPull, setPendingPull] = useState<{ repository: string; number: number } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -617,14 +674,18 @@ export function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load GitHub data"); }
     finally { setLoading(false); }
   }
-  async function refreshAI(target: string, force = false) {
-    if (!target) return;
+  async function refreshAI(force = false) {
     setAILoading(true);
-    try { setAIPriority(await loadAIPriority(target, force)); }
+    try { setAIProject(await loadAIProject(force)); }
     catch { /* AI is advisory; GitHub data remains usable. */ }
     finally { setAILoading(false); }
   }
-  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setCommitAI(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); setAIPriority(null); void refresh(repo); void refreshAI(repo); } }, [repo]);
+  useEffect(() => { if (repo) { setSelectedCommit(null); setCommitDetail(null); setCommitAI(null); setSelectedFile(null); setSelectedPull(null); setPullDetail(null); void refresh(repo); void refreshAI(); } }, [repo]);
+
+  useEffect(() => { window.localStorage.setItem("dev-flow-ai-panel", aiPanelOpen ? "open" : "closed"); }, [aiPanelOpen]);
+  useEffect(() => { window.localStorage.setItem("dev-flow-ai-width", String(aiPanelWidth)); }, [aiPanelWidth]);
+  useEffect(() => { window.localStorage.setItem("dev-flow-inspector-width", String(inspectorWidth)); }, [inspectorWidth]);
+  useEffect(() => { window.localStorage.setItem("dev-flow-pr-columns", JSON.stringify(prColumnWidths)); }, [prColumnWidths]);
 
   useEffect(() => {
     if (!repo) return;
@@ -644,7 +705,13 @@ export function App() {
       }, 350);
     });
     source.addEventListener("ai", () => {
-      void loadAIPriority(repo).then((value) => { setAIPriority(value); setAILoading(false); }).catch(() => setAILoading(false));
+      if (selectedCommit) {
+        setCommitAILoading(true);
+        void loadAICommit(repo, selectedCommit).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
+      }
+    });
+    source.addEventListener("project", () => {
+      void loadAIProject().then((value) => { setAIProject(value); setAILoading(false); }).catch(() => setAILoading(false));
       if (selectedCommit) {
         setCommitAILoading(true);
         void loadAICommit(repo, selectedCommit).then(setCommitAI).catch(() => undefined).finally(() => setCommitAILoading(false));
@@ -674,12 +741,25 @@ export function App() {
     setSelectedFile(file.filename); setFileContent(null); setFileMode("diff");
   }
 
-  async function inspectPull(number: number) {
+  async function inspectPull(number: number, targetRepo = repo) {
     setSelectedPull(number); setPullLoading(true); setPullDetail(null); setPullTab("conversation");
-    try { setPullDetail(await loadPull(repo, number)); }
+    try { setPullDetail(await loadPull(targetRepo, number)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load pull request"); }
     finally { setPullLoading(false); }
   }
+
+  function openPMWork(targetRepo: string, number: number) {
+    setTab("pulls");
+    if (targetRepo === repo) { void inspectPull(number); return; }
+    setPendingPull({ repository: targetRepo, number });
+    setRepo(targetRepo);
+  }
+
+  useEffect(() => {
+    if (!pendingPull || pendingPull.repository !== repo) return;
+    void inspectPull(pendingPull.number, pendingPull.repository);
+    setPendingPull(null);
+  }, [repo, pendingPull]);
 
   useEffect(() => {
     if (fileMode !== "file" || !selectedCommit || !selectedFile || !commitDetail) return;
@@ -698,7 +778,7 @@ export function App() {
     { mainBranch: snapshot.defaultBranch, relations: snapshot.pullRelations },
   ) : [], [snapshot]);
   const flowByNumber = useMemo(() => new Map(openPullModels.map((pull) => [pull.number, pull])), [openPullModels]);
-  const aiRanks = useMemo(() => new Map((aiPriority?.priorities ?? []).map((item) => [item.number, item.rank])), [aiPriority]);
+  const aiRanks = useMemo(() => new Map((aiProject?.prPriorities ?? []).filter((item) => item.repository === repo).map((item) => [item.number, item.rank])), [aiProject, repo]);
   const pullCounts = useMemo(() => {
     const pulls = snapshot?.pulls ?? [];
     return {
@@ -726,11 +806,30 @@ export function App() {
     return snapshot.pulls.filter((pull) => activeNumbers.has(pull.number));
   }, [snapshot, pullGraphScope, visiblePulls]);
 
+  const hasInspector = Boolean((selectedCommit && tab === "commits") || (selectedPull && tab === "pulls"));
+  const workbenchColumns = [
+    ...(aiPanelOpen ? [`${aiPanelWidth}px`, "5px"] : []),
+    "minmax(420px, 1fr)",
+    ...(hasInspector ? ["5px", `${inspectorWidth}px`] : []),
+  ].join(" ");
+
+  function startPanelResize(side: "ai" | "inspector", startX: number) {
+    const startWidth = side === "ai" ? aiPanelWidth : inspectorWidth;
+    const move = (event: PointerEvent) => {
+      const delta = event.clientX - startX;
+      if (side === "ai") setAIPanelWidth(Math.max(280, Math.min(620, startWidth + delta)));
+      else setInspectorWidth(Math.max(360, Math.min(920, startWidth - delta)));
+    };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); document.body.classList.remove("is-resizing"); };
+    document.body.classList.add("is-resizing");
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  }
+
   return <main className="app-shell" data-testid="dashboard-root">
     <header className="app-titlebar">
       <div className="app-mark"><GitBranch size={15}/><strong>Dev Flow</strong></div>
       <div className="repo-picker"><select aria-label="Repository" value={repo} onChange={(event) => setRepo(event.target.value)}>{repos.map((item) => <option key={item}>{item}</option>)}</select></div>
-      <div className="title-actions"><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
+      <div className="title-actions"><button className={`ai-toggle ${aiPanelOpen ? "active" : ""}`} onClick={() => setAIPanelOpen((value) => !value)} title="AI Project Manager"><Sparkles size={14}/></button><button className="theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun size={14}/> : <Moon size={14}/>}</button><span className={`live-sync ${liveConnected ? "connected" : ""}`} title={liveConnected ? "GitHub events update automatically" : "Live events reconnecting"}><i/></span><button className={loading ? "is-loading" : ""} onClick={() => void refresh(repo, true)} disabled={loading} title="Refresh"><RefreshCw size={14}/></button></div>
     </header>
 
     <div className="app-toolbar">
@@ -747,11 +846,10 @@ export function App() {
       </div>
     </div>}
 
-    {tab === "pulls" && <AIOperationsPanel state={aiPriority} loading={aiLoading} onRefresh={() => void refreshAI(repo, true)} onSelectPull={(number) => void inspectPull(number)}/>}
-
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
-    <section className={`workbench ${(selectedCommit && tab === "commits") || (selectedPull && tab === "pulls") ? "with-inspector" : ""}`}>
+    <section className={`workbench ${hasInspector ? "with-inspector" : ""} ${aiPanelOpen ? "with-ai" : ""}`} style={{ gridTemplateColumns: workbenchColumns }}>
+      {aiPanelOpen && <><AIProjectSidebar state={aiProject} loading={aiLoading} currentRepo={repo} onRefresh={() => void refreshAI(true)} onSelectPull={openPMWork}/><div className="panel-resizer vertical" onPointerDown={(event) => { event.preventDefault(); startPanelResize("ai", event.clientX); }}/></>}
       <div className="graph-pane">
         {loading && !snapshot ? <div className="center-message">Loading…</div> : null}
         {snapshot && tab === "commits" && <CommitGraph
@@ -780,9 +878,15 @@ export function App() {
               onSelect={(number) => void inspectPull(number)}
               sort={pullSort}
               aiRanks={aiRanks}
+              columnWidths={prColumnWidths}
+              onColumnWidths={setPrColumnWidths}
             />
         )}
       </div>
+      {hasInspector && <div
+        className="panel-resizer vertical"
+        onPointerDown={(event) => { event.preventDefault(); startPanelResize("inspector", event.clientX); }}
+      />}
       {tab === "commits" && selectedCommit && <CommitInspector
         repo={repo}
         detail={commitDetail}

@@ -25,6 +25,18 @@ aggregator = GitHubAggregator()
 _watch_task: asyncio.Task[None] | None = None
 _background_tasks: set[asyncio.Task[None]] = set()
 _ci_ai_tasks: dict[str, asyncio.Task[None]] = {}
+_project_ci_task: asyncio.Task[None] | None = None
+_project_ai_lock = asyncio.Lock()
+
+PROJECT_CONTEXT_REPO = os.getenv("DEV_FLOW_PROJECT_CONTEXT_REPO", "Biz-CollabCraft/ontology_dashboard")
+PROJECT_CONTEXT_DOCS = [
+    "docs/final_team_role_and_step_plan.md",
+    "docs/mvp/README.md",
+    "docs/mvp/requirements-specification.md",
+    "docs/mvp/current-mvp-implementation-baseline.md",
+    "docs/architecture.md",
+    "docs/closed-loop-product-consumption-contract.md",
+]
 
 
 def _watch_interval_seconds() -> int:
@@ -57,7 +69,7 @@ async def _watch_github() -> None:
                 if previous is not None and current != previous:
                     aggregator.cache.clear(repo)
                     event_hub.publish(DashboardEvent(repo=repo, event="repository_changed"))
-                    _schedule_ai(repo, "repository_changed", "fallback-watch", None)
+                    _schedule_project_pm(repo, "repository_changed", "fallback-watch", None)
             except (RuntimeError, ValueError):
                 # A transient GitHub error must not kill the watcher; the next
                 # interval retries and the browser also reconnects SSE itself.
@@ -94,6 +106,100 @@ async def _run_ai_analysis(repo: str, event_name: str, action: str | None, numbe
         event_hub.publish(DashboardEvent(repo=repo, event="ai_analysis", action="failed", number=number))
 
 
+async def _load_project_memory(force: bool = False) -> dict[str, object]:
+    current = ai_advisor.project_memory()
+    if current is not None and not force:
+        return current
+    if PROJECT_CONTEXT_REPO not in configured_repositories():
+        if current is not None:
+            return current
+        raise RuntimeError(f"Project context repository is not configured: {PROJECT_CONTEXT_REPO}")
+    snapshot_data = await aggregator.snapshot(PROJECT_CONTEXT_REPO, force=force)
+    ref = snapshot_data.get("headSha")
+    if not isinstance(ref, str) or not ref:
+        raise RuntimeError("Project context repository has no default-branch HEAD")
+
+    async def load(path: str) -> tuple[str, str] | None:
+        try:
+            payload = await aggregator.file_content(PROJECT_CONTEXT_REPO, ref, path)
+            return path, str(payload.get("content") or "")
+        except (RuntimeError, ValueError):
+            return None
+
+    loaded = await asyncio.gather(*(load(path) for path in PROJECT_CONTEXT_DOCS))
+    documents = {path: content for item in loaded if item is not None for path, content in [item]}
+    if not documents:
+        if current is not None:
+            return current
+        raise RuntimeError("No canonical project context documents could be loaded")
+    return await ai_advisor.ensure_project_memory(documents)
+
+
+async def _run_project_pm(
+    trigger_repo: str,
+    event_name: str,
+    action: str | None,
+    number: int | None,
+    *,
+    refresh_docs: bool = False,
+) -> None:
+    if not ai_advisor.available:
+        return
+    async with _project_ai_lock:
+        try:
+            if event_name not in {"startup", "repository_changed"}:
+                await asyncio.sleep(0.6)
+            memory = await _load_project_memory(force=refresh_docs)
+            snapshots: dict[str, dict[str, object]] = {}
+            for repo in configured_repositories():
+                snapshots[repo] = await aggregator.snapshot(repo, force=repo == trigger_repo)
+            pull_detail_data = None
+            if number is not None:
+                try:
+                    pull_detail_data = await aggregator.pull_detail(trigger_repo, number)
+                except (RuntimeError, ValueError):
+                    pull_detail_data = None
+            await ai_advisor.analyze_project(
+                snapshots,
+                {"repository": trigger_repo, "event": event_name, "action": action, "number": number},
+                memory,
+                pull_detail_data,
+            )
+            # Project PM is cross-repository. Broadcast completion to every open
+            # repository SSE subscription so the always-on console refreshes
+            # even when the triggering event happened in another repo.
+            for repo in configured_repositories():
+                event_hub.publish(DashboardEvent(repo=repo, event="ai_project", action="completed", number=number))
+        except Exception:
+            for repo in configured_repositories():
+                event_hub.publish(DashboardEvent(repo=repo, event="ai_project", action="failed", number=number))
+
+
+def _schedule_project_pm(repo: str, event_name: str, action: str | None, number: int | None) -> None:
+    global _project_ci_task
+    if not ai_advisor.available:
+        return
+    if event_name in {"check_run", "check_suite", "workflow_run"}:
+        if _project_ci_task is not None and not _project_ci_task.done():
+            _project_ci_task.cancel()
+
+        async def after_ci_burst() -> None:
+            try:
+                await asyncio.sleep(2.5)
+                await _run_project_pm(repo, "ci_status_changed", f"{event_name}:{action or 'updated'}", number)
+            except asyncio.CancelledError:
+                return
+
+        _project_ci_task = asyncio.create_task(after_ci_burst())
+        _background_tasks.add(_project_ci_task)
+        _project_ci_task.add_done_callback(_background_tasks.discard)
+        return
+    refresh_docs = repo == PROJECT_CONTEXT_REPO and event_name == "push"
+    task = asyncio.create_task(_run_project_pm(repo, event_name, action, number, refresh_docs=refresh_docs))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 def _schedule_ai(repo: str, event_name: str, action: str | None, number: int | None) -> None:
     if not ai_advisor.available:
         return
@@ -124,8 +230,8 @@ async def start_github_watcher() -> None:
     global _watch_task
     if _watch_task is None or _watch_task.done():
         _watch_task = asyncio.create_task(_watch_github())
-    for repo in configured_repositories():
-        _schedule_ai(repo, "startup", "initial-sync", None)
+    if configured_repositories():
+        _schedule_project_pm(PROJECT_CONTEXT_REPO if PROJECT_CONTEXT_REPO in configured_repositories() else configured_repositories()[0], "startup", "initial-sync", None)
 
 
 @app.on_event("shutdown")
@@ -162,6 +268,8 @@ async def health() -> dict[str, object]:
             "model": ai_advisor.model,
             "project": ai_advisor.project if ai_advisor.available else None,
             "triggerMode": ai_advisor.trigger_mode,
+            "projectManager": True,
+            "projectContextRepository": PROJECT_CONTEXT_REPO,
         },
     }
 
@@ -190,7 +298,7 @@ async def events(repo: str = Query(...)) -> StreamingResponse:
                     continue
                 if event.repo != repo:
                     continue
-                channel = "ai" if event.event == "ai_analysis" else "github"
+                channel = "project" if event.event == "ai_project" else ("ai" if event.event == "ai_analysis" else "github")
                 yield f"event: {channel}\ndata: {event.encode()}\n\n"
         finally:
             event_hub.unsubscribe(queue)
@@ -234,8 +342,65 @@ async def github_webhook(request: Request) -> dict[str, object]:
     aggregator.cache.clear(repo)
     event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
     if event_name != "ping":
-        _schedule_ai(repo, event_name, action, number)
+        _schedule_project_pm(repo, event_name, action, number)
     return {"accepted": True, "repo": repo, "event": event_name, "number": number}
+
+
+@app.get("/api/ai/project")
+@app.get(f"{DASHBOARD_PREFIX}/api/ai/project")
+async def ai_project(force: bool = Query(False)) -> dict[str, object]:
+    if not ai_advisor.available:
+        return {"status": "disabled", "model": ai_advisor.model}
+    current = ai_advisor.project_state()
+    if force or current is None:
+        try:
+            memory = await _load_project_memory(force=force)
+            snapshots = {repo: await aggregator.snapshot(repo, force=force) for repo in configured_repositories()}
+            current = await ai_advisor.analyze_project(
+                snapshots,
+                {"repository": "project", "event": "manual", "action": "force" if force else "initial", "number": None},
+                memory,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return current or {"status": "analyzing", "model": ai_advisor.model}
+
+
+@app.get("/api/ai/project-memory")
+@app.get(f"{DASHBOARD_PREFIX}/api/ai/project-memory")
+async def ai_project_memory() -> dict[str, object]:
+    if not ai_advisor.available:
+        return {"status": "disabled", "model": ai_advisor.model}
+    try:
+        return await _load_project_memory()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/ai/chat")
+@app.post(f"{DASHBOARD_PREFIX}/api/ai/chat")
+async def ai_chat(request: Request) -> dict[str, object]:
+    if not ai_advisor.available:
+        return {"status": "disabled", "model": ai_advisor.model}
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    raw_history = payload.get("history") or []
+    history = [
+        {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")[:6000]}
+        for item in raw_history[-12:]
+        if isinstance(item, dict)
+    ]
+    try:
+        memory = await _load_project_memory()
+        current = ai_advisor.project_state()
+        return await ai_advisor.chat_project(question, history, memory, current)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/ai/priority")

@@ -17,6 +17,17 @@ Vertex AI Gemini adds a persistent interpretation layer on top of those facts:
 - selecting a commit runs contextual impact analysis against the current open-PR flow;
 - completed AI analyses are pushed to open browsers through the same SSE live-update channel.
 
+The dashboard also runs a project-level AI PM. It reads the canonical project docs from
+`DEV_FLOW_PROJECT_CONTEXT_REPO`, extracts a persistent project charter (goal, ownership,
+execution steps, out-of-scope work, and anti-overengineering rules), and combines that
+charter with the live state of all configured repositories. The left resizable AI panel
+shows the current execution step, one concrete NOW action for each team member, PR
+priorities, and PM warnings. Its Chat tab uses the same project memory for questions such
+as "그 다음에 뭐할까?" without restarting from a blank prompt.
+
+The AI panel, right commit/PR inspector, and Pull Request table columns are resizable so
+the graph/list remains the primary workspace rather than being covered by AI output.
+
 The AI layer is advisory and never mutates GitHub state.
 
 ## Local development

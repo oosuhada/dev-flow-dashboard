@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -51,6 +52,8 @@ class VertexAIAdvisor:
         self.store = AIStateStore()
         self._locks: dict[str, asyncio.Lock] = {}
         self._commit_cache: dict[str, dict[str, Any]] = {}
+        self.project_state_key = "__project__"
+        self.project_memory_key = "__project_memory__"
 
     @property
     def available(self) -> bool:
@@ -58,6 +61,12 @@ class VertexAIAdvisor:
 
     def state(self, repo: str) -> dict[str, Any] | None:
         return self.store.load(repo)
+
+    def project_state(self) -> dict[str, Any] | None:
+        return self.store.load(self.project_state_key)
+
+    def project_memory(self) -> dict[str, Any] | None:
+        return self.store.load(self.project_memory_key)
 
     def _url(self) -> str:
         return (
@@ -138,6 +147,222 @@ class VertexAIAdvisor:
                 }
                 for commit in snapshot.get("commits", [])[:15]
             ],
+            "recentPullHistory": [
+                {
+                    "number": pull.get("number"),
+                    "title": pull.get("title"),
+                    "author": pull.get("author"),
+                    "lifecycle": pull.get("lifecycle"),
+                    "createdAt": pull.get("createdAt"),
+                    "updatedAt": pull.get("updatedAt"),
+                    "mergedAt": pull.get("mergedAt"),
+                    "closedAt": pull.get("closedAt"),
+                    "head": pull.get("head"),
+                    "base": pull.get("base"),
+                }
+                for pull in snapshot.get("pulls", [])[:30]
+            ],
+        }
+
+    async def ensure_project_memory(self, documents: dict[str, str]) -> dict[str, Any]:
+        """Build a persistent project charter from canonical docs only when they change."""
+        digest = hashlib.sha256()
+        for path in sorted(documents):
+            digest.update(path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(documents[path].encode("utf-8"))
+            digest.update(b"\0")
+        revision = digest.hexdigest()
+        current = self.project_memory()
+        if current and current.get("revision") == revision:
+            return current
+
+        source = "\n\n".join(
+            f"===== {path} =====\n{_clip(text, 90_000)}"
+            for path, text in documents.items()
+        )
+        system = """
+You are extracting the durable project charter for an AI Project Manager.
+Use ONLY the supplied canonical repository documentation. Do not add assumptions.
+Preserve explicit Korean names and GitHub handles exactly when present.
+Distinguish current/canonical requirements from historical provenance, Target ideas, and optional extensions.
+The memory must help prevent overengineering and endless documentation loops, not encourage them.
+Return JSON only with this shape:
+{
+  "projectName":"...",
+  "northStar":"one sentence",
+  "mvpGoal":"...",
+  "canonicalFlow":["..."],
+  "roles":[
+    {"name":"성민","github":"smmini","role":"...","mission":"...","owns":["..."],"mustNot":["..."],"handoffs":["..."]}
+  ],
+  "deliveryRules":["..."],
+  "antiPatterns":["..."],
+  "outOfScope":["..."],
+  "steps":[{"number":1,"name":"...","goal":"...","doneWhen":["..."]}],
+  "completionDefinition":["..."],
+  "sourceHierarchy":["which docs are canonical and which are history"]
+}
+Include all four team members and all explicitly defined execution Steps when present.
+Important anti-patterns to retain when supported by docs include unnecessary framework expansion, documentation becoming a delivery gate, ownership boundary violations, and adding features not needed by the E2E MVP.
+Write concise Korean values while preserving technical identifiers.
+""".strip()
+        result, usage = await self._generate_json(system, source, max_output_tokens=9000)
+        payload = {
+            **result,
+            "revision": revision,
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "model": self.model,
+            "sourceDocuments": list(documents.keys()),
+            "usage": usage,
+        }
+        self.store.save(self.project_memory_key, payload)
+        return payload
+
+    async def analyze_project(
+        self,
+        snapshots: dict[str, dict[str, Any]],
+        trigger: dict[str, Any],
+        project_memory: dict[str, Any],
+        changed_pull_detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        previous = self.project_state() or {}
+        compact_repositories = {
+            repo: self._compact_snapshot(snapshot)
+            for repo, snapshot in snapshots.items()
+        }
+        prompt = json.dumps(
+            {
+                "projectCharter": project_memory,
+                "previousPMContext": _clip(previous.get("contextSummary"), 9000),
+                "previousTeamActions": previous.get("teamActions", []),
+                "previousHealth": previous.get("projectHealth"),
+                "recentTriggers": previous.get("recentTriggers", [])[-25:],
+                "trigger": trigger,
+                "repositories": compact_repositories,
+                "changedPullRequestDetail": self._compact_pull_detail(changed_pull_detail),
+            },
+            ensure_ascii=False,
+        )
+        system = """
+You are the persistent AI Project Manager for a four-person software project. The team lacks a human PM, so your job is to keep delivery moving toward the documented MVP instead of letting activity drift into planning-only work or overengineering.
+
+SOURCE OF TRUTH:
+- projectCharter was extracted from canonical project docs and defines goals, role ownership, execution steps, anti-patterns, out-of-scope work, and completion criteria.
+- Git/GitHub repository facts are authoritative for current work. Never invent PRs, authors, approvals, checks, merges, commits, or dependencies.
+- LLM interpretation is advisory. Do not rewrite factual ownership or architecture contracts.
+
+PM BEHAVIOR:
+1. Infer the CURRENT EXECUTION STEP from projectCharter.steps and actual implementation/PR evidence. Do not assume the team should remain in a documentation step simply because docs are being changed.
+2. Give EACH of the four named team members exactly one concrete "NOW" action that can advance delivery. Prefer implementation, integration, review, validation, merge, or deployment over creating another planning document when the contract is already sufficient.
+3. Detect delivery anti-patterns: docs churn without implementation, framework/platform expansion not required by E2E, ownership boundary violations, WIP/PR pile-up, review starvation, repeated planning, work that is already superseded, and optional scope distracting from the current gate.
+4. If docs are already sufficient, explicitly say "새 문서 작성보다 구현/검증으로 이동" or equivalent when appropriate.
+5. Respect dependency chains: upstream blockers usually come first. But assign independent work in parallel so four people are productive at the same time.
+6. When a PR/comment/review/push changes the situation, revise prior assignments rather than restarting from scratch. Mention what changed.
+7. The ultimate completion criterion is a working public E2E product where each owner can explain their part, not the number of documents or PRs.
+
+Return JSON only:
+{
+  "headline":"what the team should do now",
+  "projectHealth":"ON_TRACK|BLOCKED|DRIFT|OVERENGINEERING",
+  "healthReason":"...",
+  "currentStep":{"number":1,"name":"...","confidence":0.0,"why":"...","exitGate":"..."},
+  "currentObjective":"single near-term delivery objective",
+  "antiPatternAlerts":[{"severity":"info|warning|critical","title":"...","reason":"...","stopDoing":"...","doInstead":"..."}],
+  "teamActions":[
+    {"name":"...","github":"...","role":"...","now":"specific action","whyNow":"...","nextHandoff":"...","blockedBy":["..."],"relatedWork":[{"repository":"owner/repo","pr":123}],"confidence":0.0}
+  ],
+  "prPriorities":[
+    {"repository":"owner/repo","number":123,"rank":1,"priority":"P0|P1|P2|P3","reason":"...","nextAction":"...","actorGithub":"...","impact":"...","confidence":0.0}
+  ],
+  "changesSinceLast":["..."],
+  "contextSummary":"compact persistent PM memory for the next event"
+}
+
+Use Korean for user-facing text. Include exactly the four project members from projectCharter.roles in teamActions. Only use real open PRs in prPriorities/relatedWork. It is acceptable for a team member's NOW action to be work without a PR if that is the correct next integration task.
+""".strip()
+        result, usage = await self._generate_json(system, prompt, max_output_tokens=8000)
+
+        valid_open = {
+            (repo, int(pull["number"]))
+            for repo, snapshot in snapshots.items()
+            for pull in snapshot.get("pulls", [])
+            if pull.get("lifecycle") == "open" and pull.get("number")
+        }
+        priorities: list[dict[str, Any]] = []
+        for item in result.get("prPriorities", []):
+            try:
+                key = (str(item.get("repository")), int(item.get("number")))
+            except (TypeError, ValueError):
+                continue
+            if key not in valid_open:
+                continue
+            priorities.append({**item, "repository": key[0], "number": key[1]})
+        result["prPriorities"] = priorities
+
+        charter_roles = {
+            str(role.get("github")): role
+            for role in project_memory.get("roles", [])
+            if role.get("github")
+        }
+        actions_by_github = {
+            str(action.get("github")): action
+            for action in result.get("teamActions", [])
+            if action.get("github") in charter_roles
+        }
+        result["teamActions"] = [
+            actions_by_github[github]
+            for github in charter_roles
+            if github in actions_by_github
+        ]
+
+        recent_triggers = [*previous.get("recentTriggers", [])[-24:], trigger]
+        payload = {
+            **result,
+            "status": "ready",
+            "model": self.model,
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "trigger": trigger,
+            "analysisSequence": int(previous.get("analysisSequence") or 0) + 1,
+            "recentTriggers": recent_triggers,
+            "projectMemoryRevision": project_memory.get("revision"),
+            "usage": usage,
+        }
+        self.store.save(self.project_state_key, payload)
+        return payload
+
+    async def chat_project(
+        self,
+        question: str,
+        history: list[dict[str, str]],
+        project_memory: dict[str, Any],
+        project_state: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        prompt = json.dumps(
+            {
+                "projectCharter": project_memory,
+                "currentPMState": project_state or {},
+                "conversation": history[-12:],
+                "question": question,
+            },
+            ensure_ascii=False,
+        )
+        system = """
+You are the conversational interface of the same persistent AI Project Manager used by the dashboard.
+Answer questions about what the team should do next using the canonical project charter and current PM state.
+Do not invent GitHub facts. When information is not present, say that it is not confirmed.
+Prefer concrete execution guidance over creating more planning documents when the contract is already sufficient.
+Respect the four owners and their documented responsibility boundaries.
+If the user asks "다음에 뭐할까?" or equivalent, give the single highest-value next action first, then the parallel actions for the other team members if useful.
+Return JSON only: {"answer":"Korean markdown text","suggestedQuestions":["...","...","..."]}
+""".strip()
+        result, usage = await self._generate_json(system, prompt, max_output_tokens=3500)
+        return {
+            "answer": str(result.get("answer") or ""),
+            "suggestedQuestions": [str(item) for item in result.get("suggestedQuestions", [])[:4]],
+            "model": self.model,
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "usage": usage,
         }
 
     def _compact_pull_detail(self, detail: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -253,7 +478,7 @@ Write user-facing text in Korean, but keep code identifiers and PR numbers uncha
         commit: dict[str, Any],
         snapshot: dict[str, Any],
     ) -> dict[str, Any]:
-        previous = self.store.load(repo) or {}
+        previous = self.project_state() or self.store.load(repo) or {}
         context_version = previous.get("generatedAt") or "initial"
         cache_key = f"{repo}:{commit.get('sha')}:{context_version}"
         if cache_key in self._commit_cache:
