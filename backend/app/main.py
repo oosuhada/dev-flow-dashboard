@@ -59,6 +59,57 @@ def _verify_webhook(body: bytes, signature: str | None) -> bool:
     return hmac.compare_digest(signature, f"sha256={digest}")
 
 
+def _webhook_pm_context(payload: dict[str, object], event_name: str, action: str | None, number: int | None) -> dict[str, object]:
+    """Keep the triggering GitHub evidence available even if REST refresh fails.
+
+    The webhook is the freshest source for a newly-created comment/review.  PM
+    analysis must not silently lose that evidence because a follow-up GitHub
+    REST request is rate-limited or has not settled yet.
+    """
+    sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+    pull = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
+    review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
+    comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
+    check_run = payload.get("check_run") if isinstance(payload.get("check_run"), dict) else {}
+    workflow_run = payload.get("workflow_run") if isinstance(payload.get("workflow_run"), dict) else {}
+
+    def clipped(value: object, limit: int = 8000) -> str | None:
+        text = str(value or "").strip()
+        return text[:limit] if text else None
+
+    subject = pull or issue
+    context: dict[str, object] = {
+        "event": event_name,
+        "action": action,
+        "number": number,
+        "actor": clipped(sender.get("login"), 120),
+        "title": clipped(subject.get("title"), 500),
+    }
+    if event_name == "pull_request_review":
+        context.update({
+            "reviewState": clipped(review.get("state"), 80),
+            "reviewBody": clipped(review.get("body"), 12000),
+            "headSha": clipped(((pull.get("head") or {}).get("sha") if isinstance(pull.get("head"), dict) else None), 64),
+        })
+    elif event_name in {"issue_comment", "pull_request_review_comment"}:
+        context.update({
+            "commentBody": clipped(comment.get("body"), 12000),
+            "commentUrl": clipped(comment.get("html_url"), 1000),
+        })
+    elif event_name == "pull_request":
+        context.update({
+            "body": clipped(pull.get("body"), 8000),
+            "headSha": clipped(((pull.get("head") or {}).get("sha") if isinstance(pull.get("head"), dict) else None), 64),
+            "mergeableState": clipped(pull.get("mergeable_state"), 120),
+        })
+    elif event_name == "check_run":
+        context.update({"check": clipped(check_run.get("name"), 300), "status": clipped(check_run.get("conclusion") or check_run.get("status"), 120)})
+    elif event_name == "workflow_run":
+        context.update({"workflow": clipped(workflow_run.get("name"), 300), "status": clipped(workflow_run.get("conclusion") or workflow_run.get("status"), 120)})
+    return {key: value for key, value in context.items() if value is not None}
+
+
 async def _watch_github() -> None:
     fingerprints: dict[str, str] = {}
     while True:
@@ -148,6 +199,7 @@ async def _run_project_pm(
     number: int | None,
     *,
     refresh_docs: bool = False,
+    event_context: dict[str, object] | None = None,
 ) -> None:
     if not ai_advisor.available:
         return
@@ -171,9 +223,12 @@ async def _run_project_pm(
                     pull_detail_data = await aggregator.pull_detail(trigger_repo, number)
                 except (RuntimeError, ValueError):
                     pull_detail_data = None
+            trigger = {"repository": trigger_repo, "event": event_name, "action": action, "number": number}
+            if event_context:
+                trigger["eventContext"] = event_context
             project_state = await ai_advisor.analyze_project(
                 snapshots,
-                {"repository": trigger_repo, "event": event_name, "action": action, "number": number},
+                trigger,
                 memory,
                 pull_detail_data,
             )
@@ -204,7 +259,13 @@ async def _run_project_pm(
                 event_hub.publish(DashboardEvent(repo=repo, event="ai_project", action="failed", number=number))
 
 
-def _schedule_project_pm(repo: str, event_name: str, action: str | None, number: int | None) -> None:
+def _schedule_project_pm(
+    repo: str,
+    event_name: str,
+    action: str | None,
+    number: int | None,
+    event_context: dict[str, object] | None = None,
+) -> None:
     global _project_ci_task
     if not ai_advisor.available:
         return
@@ -215,7 +276,13 @@ def _schedule_project_pm(repo: str, event_name: str, action: str | None, number:
         async def after_ci_burst() -> None:
             try:
                 await asyncio.sleep(2.5)
-                await _run_project_pm(repo, "ci_status_changed", f"{event_name}:{action or 'updated'}", number)
+                await _run_project_pm(
+                    repo,
+                    "ci_status_changed",
+                    f"{event_name}:{action or 'updated'}",
+                    number,
+                    event_context=event_context,
+                )
             except asyncio.CancelledError:
                 return
 
@@ -224,7 +291,9 @@ def _schedule_project_pm(repo: str, event_name: str, action: str | None, number:
         _project_ci_task.add_done_callback(_background_tasks.discard)
         return
     refresh_docs = repo == PROJECT_CONTEXT_REPO and event_name == "push"
-    task = asyncio.create_task(_run_project_pm(repo, event_name, action, number, refresh_docs=refresh_docs))
+    task = asyncio.create_task(
+        _run_project_pm(repo, event_name, action, number, refresh_docs=refresh_docs, event_context=event_context)
+    )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -369,7 +438,15 @@ async def github_webhook(request: Request) -> dict[str, object]:
         pull_request = payload.get("pull_request") or {}
         number = issue.get("number") or pull_request.get("number")
         if not isinstance(number, int):
-            number = None
+            event_payload = (
+                payload.get("check_run")
+                or payload.get("check_suite")
+                or payload.get("workflow_run")
+                or {}
+            )
+            pull_refs = event_payload.get("pull_requests") or []
+            candidate = (pull_refs[0] if pull_refs else {}).get("number")
+            number = candidate if isinstance(candidate, int) else None
 
     aggregator.cache.clear(repo)
     if event_name != "ping":
@@ -381,7 +458,7 @@ async def github_webhook(request: Request) -> dict[str, object]:
             event_hub.publish(DashboardEvent(repo=subscribed_repo, event="activity", action=str(activity_id), number=number))
     event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
     if event_name != "ping":
-        _schedule_project_pm(repo, event_name, action, number)
+        _schedule_project_pm(repo, event_name, action, number, _webhook_pm_context(payload, event_name, action, number))
     return {"accepted": True, "repo": repo, "event": event_name, "number": number}
 
 

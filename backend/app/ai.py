@@ -227,6 +227,29 @@ Write concise Korean values while preserving technical identifiers.
         changed_pull_detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         previous = self.project_state() or {}
+        unresolved_human_changes: dict[tuple[str, int], dict[str, Any]] = {}
+        for repo, snapshot in snapshots.items():
+            for pull in snapshot.get("pulls", []):
+                if pull.get("lifecycle") != "open" or not pull.get("number"):
+                    continue
+                latest_decisive: dict[str, str] = {}
+                for review in pull.get("reviews", []):
+                    if review.get("isBot"):
+                        continue
+                    user = str(review.get("user") or "").strip()
+                    state = str(review.get("state") or "").upper()
+                    if user and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+                        latest_decisive[user] = state
+                blockers = [user for user, state in latest_decisive.items() if state == "CHANGES_REQUESTED"]
+                if blockers:
+                    key = (repo, int(pull["number"]))
+                    unresolved_human_changes[key] = {
+                        "repository": repo,
+                        "number": key[1],
+                        "author": pull.get("author"),
+                        "reviewers": blockers,
+                        "title": pull.get("title"),
+                    }
         compact_repositories = {
             repo: self._compact_snapshot(snapshot)
             for repo, snapshot in snapshots.items()
@@ -241,6 +264,7 @@ Write concise Korean values while preserving technical identifiers.
                 "trigger": trigger,
                 "repositories": compact_repositories,
                 "changedPullRequestDetail": self._compact_pull_detail(changed_pull_detail),
+                "unresolvedHumanChangesRequested": list(unresolved_human_changes.values()),
             },
             ensure_ascii=False,
         )
@@ -260,6 +284,8 @@ PM BEHAVIOR:
 5. Respect dependency chains: upstream blockers usually come first. But assign independent work in parallel so four people are productive at the same time.
 6. When a PR/comment/review/push changes the situation, revise prior assignments rather than restarting from scratch. Mention what changed.
 7. The ultimate completion criterion is a working public E2E product where each owner can explain their part, not the number of documents or PRs.
+8. A human CHANGES_REQUESTED review is a hard merge blocker until that reviewer's decisive state changes to APPROVED or DISMISSED. Never tell a reviewer/maintainer to merge such a PR first. Assign the PR author to address the requested changes, then request re-review, then merge only after the blocker is cleared. Automated reviews and green CI do not override this human blocker. Exception: if the correct project action is to CLOSE/abandon a superseded PR instead of merging it, closing the PR is allowed and you should not ask the author to fix code that will be discarded.
+9. trigger.eventContext is fresh webhook evidence. Treat a just-submitted human review/comment body there as authoritative even if changedPullRequestDetail is missing because the GitHub REST API is rate-limited or stale.
 
 Return JSON only:
 {
@@ -297,7 +323,28 @@ Use Korean for user-facing text. Include exactly the four project members from p
                 continue
             if key not in valid_open:
                 continue
-            priorities.append({**item, "repository": key[0], "number": key[1]})
+            normalized = {**item, "repository": key[0], "number": key[1]}
+            human_blocker = unresolved_human_changes.get(key)
+            intended_action = " ".join(
+                str(normalized.get(field) or "")
+                for field in ("nextAction", "reason", "impact")
+            ).lower()
+            closing_intent = any(token in intended_action for token in ("close", "폐기", "닫기", "종료", "discard", "abandon"))
+            if human_blocker and not closing_intent:
+                author = str(human_blocker.get("author") or normalized.get("actorGithub") or "author")
+                reviewers = ", ".join(f"@{reviewer}" for reviewer in human_blocker.get("reviewers", []))
+                normalized["actorGithub"] = author
+                normalized["nextAction"] = (
+                    f"@{author}: unresolved human CHANGES_REQUESTED를 반영해 수정 commit을 push하고 "
+                    f"{reviewers or 'reviewer'}에게 재검증을 요청; 승인 전 merge 금지"
+                )
+                normalized["reason"] = (
+                    f"사람 리뷰어 {reviewers or 'reviewer'}의 CHANGES_REQUESTED가 아직 unresolved입니다. "
+                    "CI/자동리뷰가 green이어도 author 수정과 재승인이 먼저입니다."
+                )
+                if str(normalized.get("priority") or "") not in {"P0", "P1"}:
+                    normalized["priority"] = "P1"
+            priorities.append(normalized)
         result["prPriorities"] = priorities
 
         charter_roles = {
@@ -315,6 +362,50 @@ Use Korean for user-facing text. Include exactly the four project members from p
             for github in charter_roles
             if github in actions_by_github
         ]
+
+        # Deterministic safety rail: a later unrelated webhook must not dilute a
+        # still-unresolved human Request Changes into "merge now" advice.
+        priority_rank = {
+            (str(item.get("repository")), int(item.get("number"))): int(item.get("rank") or 999)
+            for item in priorities
+            if item.get("repository") and item.get("number")
+        }
+        blockers_by_author: dict[str, list[dict[str, Any]]] = {}
+        for key, blocker in unresolved_human_changes.items():
+            matching_priority = next(
+                (item for item in priorities if str(item.get("repository")) == key[0] and int(item.get("number") or 0) == key[1]),
+                None,
+            )
+            if matching_priority is not None:
+                intended_action = " ".join(
+                    str(matching_priority.get(field) or "")
+                    for field in ("nextAction", "reason", "impact")
+                ).lower()
+                if any(token in intended_action for token in ("close", "폐기", "닫기", "종료", "discard", "abandon")):
+                    continue
+            author = str(blocker.get("author") or "").strip()
+            if author and author in charter_roles:
+                blockers_by_author.setdefault(author, []).append({**blocker, "rank": priority_rank.get(key, 999)})
+        for author, blockers in blockers_by_author.items():
+            blockers.sort(key=lambda item: (int(item.get("rank") or 999), int(item.get("number") or 0)))
+            blocker = blockers[0]
+            number = int(blocker["number"])
+            repository = str(blocker["repository"])
+            reviewers = ", ".join(f"@{reviewer}" for reviewer in blocker.get("reviewers", [])) or "reviewer"
+            action = next((item for item in result["teamActions"] if item.get("github") == author), None)
+            if action is not None:
+                action["now"] = (
+                    f"{repository.split('/')[-1]} PR #{number}의 unresolved human CHANGES_REQUESTED를 반영해 수정하고 "
+                    f"{reviewers} 재검증을 받은 뒤 merge 단계로 이동"
+                )
+                action["whyNow"] = (
+                    f"PR #{number}은 사람 리뷰의 Request Changes가 아직 유효합니다. "
+                    "green CI나 자동 리뷰보다 이 blocker 해소가 먼저입니다."
+                )
+                related = list(action.get("relatedWork") or [])
+                if not any(str(item.get("repository")) == repository and int(item.get("pr") or 0) == number for item in related):
+                    related.insert(0, {"repository": repository, "pr": number})
+                action["relatedWork"] = related
 
         recent_triggers = [*previous.get("recentTriggers", [])[-24:], trigger]
         payload = {

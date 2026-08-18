@@ -129,3 +129,66 @@ async def test_commit_analysis_filters_related_prs_and_caches_within_context(mon
     assert first["relatedPulls"] == [22]
     assert second == first
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_project_pm_human_changes_requested_forces_author_fix_before_merge(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_ENABLED", "true")
+    monkeypatch.setenv("DEV_FLOW_AI_API_KEY", "test-key")
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    advisor = VertexAIAdvisor()
+    current = snapshot()
+    pull_23 = next(item for item in current["pulls"] if item["number"] == 23)
+    pull_23["reviews"] = [
+        {"user": "reviewer1", "state": "CHANGES_REQUESTED", "body": "fix shutdown", "isBot": False},
+        {"user": "github-actions[bot]", "state": "COMMENTED", "body": "ready", "isBot": True},
+    ]
+    prompts: list[dict] = []
+
+    async def fake_generate(_system: str, prompt: str, max_output_tokens: int = 4096):
+        prompts.append(json.loads(prompt))
+        return ({
+            "headline": "merge #23 now",
+            "projectHealth": "ON_TRACK",
+            "healthReason": "tests green",
+            "currentStep": {"number": 4, "name": "runtime", "confidence": .9, "why": "x", "exitGate": "y"},
+            "currentObjective": "ship",
+            "antiPatternAlerts": [],
+            "teamActions": [
+                {"name": "Alice", "github": "alice", "role": "r1", "now": "other", "whyNow": "x", "nextHandoff": "", "blockedBy": [], "relatedWork": [], "confidence": .8},
+                {"name": "Bob", "github": "bob", "role": "r2", "now": "merge #23", "whyNow": "green", "nextHandoff": "", "blockedBy": [], "relatedWork": [], "confidence": .8},
+                {"name": "Carol", "github": "carol", "role": "r3", "now": "other", "whyNow": "x", "nextHandoff": "", "blockedBy": [], "relatedWork": [], "confidence": .8},
+                {"name": "Dave", "github": "dave", "role": "r4", "now": "other", "whyNow": "x", "nextHandoff": "", "blockedBy": [], "relatedWork": [], "confidence": .8},
+            ],
+            "prPriorities": [
+                {"repository": "A/one", "number": 23, "rank": 1, "priority": "P0", "reason": "green", "nextAction": "reviewer merge", "actorGithub": "reviewer1", "impact": "ship", "confidence": .9},
+            ],
+            "changesSinceLast": [],
+            "contextSummary": "ctx",
+        }, {"totalTokenCount": 100})
+
+    monkeypatch.setattr(advisor, "_generate_json", fake_generate)
+    project_memory = {
+        "roles": [
+            {"name": "Alice", "github": "alice", "role": "r1"},
+            {"name": "Bob", "github": "bob", "role": "r2"},
+            {"name": "Carol", "github": "carol", "role": "r3"},
+            {"name": "Dave", "github": "dave", "role": "r4"},
+        ],
+        "steps": [],
+    }
+    result = await advisor.analyze_project(
+        {"A/one": current},
+        {"repository": "A/one", "event": "pull_request_review", "action": "submitted", "number": 23, "eventContext": {"reviewState": "changes_requested", "reviewBody": "fix shutdown"}},
+        project_memory,
+    )
+
+    priority = result["prPriorities"][0]
+    bob = next(item for item in result["teamActions"] if item["github"] == "bob")
+    assert priority["actorGithub"] == "bob"
+    assert "CHANGES_REQUESTED" in priority["nextAction"]
+    assert "merge 금지" in priority["nextAction"]
+    assert "PR #23" in bob["now"]
+    assert "재검증" in bob["now"]
+    assert prompts[0]["trigger"]["eventContext"]["reviewBody"] == "fix shutdown"
+    assert prompts[0]["unresolvedHumanChangesRequested"][0]["number"] == 23
