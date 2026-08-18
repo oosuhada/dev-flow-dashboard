@@ -219,14 +219,14 @@ function lifecycleLabel(pull: { lifecycle?: "open" | "merged" | "closed"; draft:
 
 function orderPullsForGraph(pulls: PullRequestInput[], relations: PullRelation[]) {
   const byNumber = new Map(pulls.map((pull) => [pull.number, pull]));
-  const childCounts = new Map(pulls.map((pull) => [pull.number, 0]));
-  const parents = new Map<number, number[]>();
+  const indegree = new Map(pulls.map((pull) => [pull.number, 0]));
+  const children = new Map<number, number[]>();
   for (const edge of relations) {
     if (!byNumber.has(edge.source) || !byNumber.has(edge.target)) continue;
-    childCounts.set(edge.source, (childCounts.get(edge.source) ?? 0) + 1);
-    parents.set(edge.target, [...(parents.get(edge.target) ?? []), edge.source]);
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+    children.set(edge.source, [...(children.get(edge.source) ?? []), edge.target]);
   }
-  const ready = pulls.filter((pull) => (childCounts.get(pull.number) ?? 0) === 0);
+  const ready = pulls.filter((pull) => (indegree.get(pull.number) ?? 0) === 0);
   const ordered: PullRequestInput[] = [];
   const emitted = new Set<number>();
   while (ready.length) {
@@ -234,9 +234,9 @@ function orderPullsForGraph(pulls: PullRequestInput[], relations: PullRelation[]
     const pull = ready.shift()!;
     if (emitted.has(pull.number)) continue;
     emitted.add(pull.number); ordered.push(pull);
-    for (const parent of parents.get(pull.number) ?? []) {
-      childCounts.set(parent, (childCounts.get(parent) ?? 1) - 1);
-      if ((childCounts.get(parent) ?? 0) === 0) ready.push(byNumber.get(parent)!);
+    for (const child of children.get(pull.number) ?? []) {
+      indegree.set(child, (indegree.get(child) ?? 1) - 1);
+      if ((indegree.get(child) ?? 0) === 0) ready.push(byNumber.get(child)!);
     }
   }
   const leftovers = pulls.filter((pull) => !emitted.has(pull.number)).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -253,37 +253,64 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }
   const ordered = useMemo(() => orderPullsForGraph(pulls, relations), [pulls, relations]);
   const visibleNumbers = useMemo(() => new Set(ordered.map((pull) => pull.number)), [ordered]);
   const visibleRelations = useMemo(() => relations.filter((edge) => visibleNumbers.has(edge.source) && visibleNumbers.has(edge.target)), [relations, visibleNumbers]);
-  const pseudoCommits = useMemo<CommitRecord[]>(() => ordered.map((pull) => ({
-    sha: `pr-${pull.number}`,
-    message: pull.title,
-    author: pull.author,
-    email: "",
-    timestamp: pull.updatedAt,
-    parents: visibleRelations.filter((edge) => edge.target === pull.number).map((edge) => `pr-${edge.source}`),
-    branch: pull.head,
-    refs: [],
-  })), [ordered, visibleRelations]);
-  const layout = useMemo(() => computeGraphLayout(pseudoCommits, null), [pseudoCommits]);
-  const strokes = useMemo(() => layout.branches.flatMap((branch) => branchStrokes(branch, false)), [layout]);
-  const width = Math.max(72, graphWidth(layout) + GRAPH_PADDING);
-  const height = Math.max(ROW_HEIGHT, graphHeight(layout));
   const upstream = new Map<number, number[]>();
   const downstream = new Map<number, number[]>();
   for (const edge of visibleRelations) {
     upstream.set(edge.target, [...(upstream.get(edge.target) ?? []), edge.source]);
     downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target]);
   }
+  const depth = new Map<number, number>();
+  for (const pull of ordered) {
+    const parents = upstream.get(pull.number) ?? [];
+    depth.set(pull.number, parents.length ? Math.max(...parents.map((parent) => (depth.get(parent) ?? 0) + 1)) : 0);
+  }
+  const parent = new Map(ordered.map((pull) => [pull.number, pull.number]));
+  const find = (number: number): number => {
+    const current = parent.get(number) ?? number;
+    if (current === number) return number;
+    const root = find(current); parent.set(number, root); return root;
+  };
+  for (const edge of visibleRelations) {
+    const a = find(edge.source); const b = find(edge.target);
+    if (a !== b) parent.set(b, a);
+  }
+  const componentColour = new Map<number, number>();
+  let nextColour = 0;
+  for (const pull of ordered) {
+    const root = find(pull.number);
+    if (!componentColour.has(root)) componentColour.set(root, nextColour++);
+  }
+  const PR_ROW_HEIGHT = 42;
+  const PR_LANE_WIDTH = 22;
+  const PR_LANE_OFFSET = 18;
+  const maxDepth = Math.max(0, ...ordered.map((pull) => depth.get(pull.number) ?? 0));
+  const width = Math.max(58, PR_LANE_OFFSET * 2 + (maxDepth + 1) * PR_LANE_WIDTH);
+  const height = Math.max(PR_ROW_HEIGHT, ordered.length * PR_ROW_HEIGHT);
+  const points = new Map(ordered.map((pull, index) => [pull.number, {
+    x: PR_LANE_OFFSET + (depth.get(pull.number) ?? 0) * PR_LANE_WIDTH,
+    y: index * PR_ROW_HEIGHT + PR_ROW_HEIGHT / 2,
+  }]));
   return <div className="pr-graph-table" data-testid="pr-graph" data-edge-count={visibleRelations.length}>
     <div className="pr-graph-head" style={{ gridTemplateColumns: `${width}px minmax(360px,1fr) minmax(220px,.55fr) 118px 110px` }}>
       <span>Graph</span><span>Pull request</span><span>Branch</span><span>State</span><span>Updated</span>
     </div>
     <div className="pr-graph-body">
       <div className="pr-graph-svg" style={{ width }}><svg width={width} height={height} aria-hidden="true">
-        {strokes.map((stroke, index) => <g key={index}><path d={stroke.path} className="git-edge-shadow"/><path d={stroke.path} stroke={laneColor(stroke.colour)} className="git-edge"/></g>)}
-        {ordered.map((pull, index) => {
-          const vertex = layout.vertices[index]; if (!vertex) return null;
-          const color = laneColor(vertex.colour); const active = selected === pull.number;
-          return <g key={pull.number}>{active && <circle cx={laneX(vertex.x)} cy={rowY(vertex.y)} r={VERTEX_RADIUS + 4} fill={color} opacity=".2"/>}<circle cx={laneX(vertex.x)} cy={rowY(vertex.y)} r={VERTEX_RADIUS} fill={color} stroke="#1e1e1e" strokeWidth={active ? 2.5 : 1}/></g>;
+        {visibleRelations.map((edge) => {
+          const from = points.get(edge.source); const to = points.get(edge.target);
+          if (!from || !to) return null;
+          const root = find(edge.source); const color = laneColor(componentColour.get(root) ?? 0);
+          const mid = (from.y + to.y) / 2;
+          const path = from.x === to.x
+            ? `M ${from.x} ${from.y} L ${to.x} ${to.y}`
+            : `M ${from.x} ${from.y} C ${from.x} ${mid}, ${to.x} ${mid}, ${to.x} ${to.y}`;
+          return <g key={`${edge.source}-${edge.target}`}><path d={path} className="git-edge-shadow"/><path d={path} stroke={color} className="git-edge"/></g>;
+        })}
+        {ordered.map((pull) => {
+          const point = points.get(pull.number)!;
+          const root = find(pull.number); const color = laneColor(componentColour.get(root) ?? 0); const active = selected === pull.number;
+          const connected = (upstream.get(pull.number)?.length ?? 0) + (downstream.get(pull.number)?.length ?? 0) > 0;
+          return <g key={pull.number}>{active && <circle cx={point.x} cy={point.y} r={VERTEX_RADIUS + 4} fill={color} opacity=".2"/>}<circle cx={point.x} cy={point.y} r={VERTEX_RADIUS} fill={connected ? color : "#777"} stroke="#1e1e1e" strokeWidth={active ? 2.5 : 1}/></g>;
         })}
       </svg></div>
       <div className="pr-graph-rows" style={{ marginLeft: width }}>
@@ -300,6 +327,39 @@ function PullRequestGraph({ pulls, relations, flowByNumber, selected, onSelect }
         })}
       </div>
     </div>
+  </div>;
+}
+
+function PullRequestList({ pulls, relations, flowByNumber, selected, onSelect }: {
+  pulls: PullRequestInput[];
+  relations: PullRelation[];
+  flowByNumber: Map<number, PullRequestModel>;
+  selected: number | null;
+  onSelect: (value: number) => void;
+}) {
+  const visibleNumbers = new Set(pulls.map((pull) => pull.number));
+  const upstream = new Map<number, number[]>();
+  const downstream = new Map<number, number[]>();
+  for (const edge of relations) {
+    if (!visibleNumbers.has(edge.source) && !visibleNumbers.has(edge.target)) continue;
+    upstream.set(edge.target, [...(upstream.get(edge.target) ?? []), edge.source]);
+    downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target]);
+  }
+  const ordered = [...pulls].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.number - a.number);
+  return <div className="pr-list" data-testid="pr-list">
+    <div className="pr-list-head"><span>Pull request</span><span>Branch</span><span>Relations</span><span>State</span><span>Updated</span></div>
+    {ordered.map((pull) => {
+      const deps = upstream.get(pull.number) ?? [];
+      const blocks = downstream.get(pull.number) ?? [];
+      const flow = flowByNumber.get(pull.number);
+      return <button key={pull.number} className={`pr-list-row ${selected === pull.number ? "selected" : ""}`} onClick={() => onSelect(pull.number)}>
+        <div className="pr-graph-title"><span className="pr-number">#{pull.number}</span><span className="pr-title-text">{pull.title}</span></div>
+        <span className="pr-branch">{pull.head}<ChevronRight size={11}/>{pull.base}</span>
+        <span className="pr-relations">{deps.length > 0 && <span>after {deps.map((n) => `#${n}`).join(", ")}</span>}{blocks.length > 0 && <span>blocks {blocks.map((n) => `#${n}`).join(", ")}</span>}{deps.length === 0 && blocks.length === 0 && <i>—</i>}</span>
+        <span className={`lifecycle lifecycle-${pull.lifecycle ?? "open"}`}>{lifecycleLabel(pull)}{flow && <small>{statusLabel(flow.status)}</small>}</span>
+        <time>{shortDate(pull.updatedAt)}</time>
+      </button>;
+    })}
   </div>;
 }
 
@@ -372,6 +432,8 @@ export function App() {
   const [pullLoading, setPullLoading] = useState(false);
   const [pullTab, setPullTab] = useState<"conversation" | "commits" | "checks">("conversation");
   const [pullFilter, setPullFilter] = useState<"all" | "open" | "merged" | "closed">("all");
+  const [showPullGraph, setShowPullGraph] = useState(false);
+  const [pullGraphScope, setPullGraphScope] = useState<"active" | "filtered">("active");
 
   useEffect(() => { loadRepositories().then((items) => { setRepos(items); setRepo((current) => current || items[0] || ""); }).catch((reason) => { setError(reason.message); setLoading(false); }); }, []);
   async function refresh(target: string, force = false) {
@@ -435,6 +497,18 @@ export function App() {
     const searchMatch = !query || `${pull.number} ${pull.title} ${pull.author} ${pull.head} ${pull.base}`.toLowerCase().includes(query.toLowerCase());
     return stateMatch && searchMatch;
   }), [snapshot, pullFilter, query]);
+  const graphPulls = useMemo(() => {
+    if (!snapshot) return [];
+    if (pullGraphScope === "filtered") return visiblePulls;
+    const openNumbers = new Set(snapshot.pulls.filter((pull) => (pull.lifecycle ?? "open") === "open").map((pull) => pull.number));
+    const activeNumbers = new Set(openNumbers);
+    for (const edge of snapshot.pullRelations) {
+      if (openNumbers.has(edge.source) || openNumbers.has(edge.target)) {
+        activeNumbers.add(edge.source); activeNumbers.add(edge.target);
+      }
+    }
+    return snapshot.pulls.filter((pull) => activeNumbers.has(pull.number));
+  }, [snapshot, pullGraphScope, visiblePulls]);
 
   return <main className="app-shell" data-testid="dashboard-root">
     <header className="app-titlebar">
@@ -448,7 +522,13 @@ export function App() {
       <label className="graph-search"><Search size={13}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "commits" ? "Filter commits, branches, authors…" : "Filter pull requests…"}/></label>
     </div>
 
-    {tab === "pulls" && <div className="pr-filterbar">{(["all", "open", "merged", "closed"] as const).map((state) => <button key={state} className={pullFilter === state ? "active" : ""} onClick={() => setPullFilter(state)}>{state[0].toUpperCase() + state.slice(1)} <span>{pullCounts[state]}</span></button>)}</div>}
+    {tab === "pulls" && <div className="pr-filterbar">
+      <div className="pr-state-filters">{(["all", "open", "merged", "closed"] as const).map((state) => <button key={state} className={pullFilter === state ? "active" : ""} onClick={() => { setPullFilter(state); if (showPullGraph && state !== "all") setPullGraphScope("filtered"); }}>{state[0].toUpperCase() + state.slice(1)} <span>{pullCounts[state]}</span></button>)}</div>
+      <div className="pr-view-controls">
+        {showPullGraph && <div className="pr-graph-scope"><button className={pullGraphScope === "active" ? "active" : ""} onClick={() => setPullGraphScope("active")}>Active + linked</button><button className={pullGraphScope === "filtered" ? "active" : ""} onClick={() => setPullGraphScope("filtered")}>Current filter</button></div>}
+        <button className={`relations-toggle ${showPullGraph ? "active" : ""}`} onClick={() => setShowPullGraph((value) => !value)}><GitMerge size={12}/>{showPullGraph ? "Hide relations" : "Show relations"}</button>
+      </div>
+    </div>}
 
     {error && <div className="error-banner"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError(null)}><X size={13}/></button></div>}
 
@@ -463,13 +543,22 @@ export function App() {
           onSelect={(commit) => void inspectCommit(commit)}
           query={query}
         />}
-        {snapshot && tab === "pulls" && <PullRequestGraph
-          pulls={visiblePulls}
-          relations={snapshot.pullRelations}
-          flowByNumber={flowByNumber}
-          selected={selectedPull}
-          onSelect={(number) => void inspectPull(number)}
-        />}
+        {snapshot && tab === "pulls" && (showPullGraph
+          ? <PullRequestGraph
+              pulls={graphPulls}
+              relations={snapshot.pullRelations}
+              flowByNumber={flowByNumber}
+              selected={selectedPull}
+              onSelect={(number) => void inspectPull(number)}
+            />
+          : <PullRequestList
+              pulls={visiblePulls}
+              relations={snapshot.pullRelations}
+              flowByNumber={flowByNumber}
+              selected={selectedPull}
+              onSelect={(number) => void inspectPull(number)}
+            />
+        )}
       </div>
       {tab === "commits" && selectedCommit && <CommitInspector
         repo={repo}
