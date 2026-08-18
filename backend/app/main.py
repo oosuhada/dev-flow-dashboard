@@ -8,11 +8,17 @@ from fastapi.staticfiles import StaticFiles
 
 from .github import GitHubAggregator, configured_repositories
 
-app = FastAPI(title="Dev Flow Dashboard API", docs_url="/api/docs", openapi_url="/api/openapi.json")
+DASHBOARD_PREFIX = "/dev_dashboard"
+app = FastAPI(
+    title="Dev Flow Dashboard API",
+    docs_url=f"{DASHBOARD_PREFIX}/api/docs",
+    openapi_url=f"{DASHBOARD_PREFIX}/api/openapi.json",
+)
 aggregator = GitHubAggregator()
 
 
 @app.get("/api/health")
+@app.get(f"{DASHBOARD_PREFIX}/api/health")
 async def health() -> dict[str, object]:
     return {
         "status": "ok",
@@ -23,11 +29,13 @@ async def health() -> dict[str, object]:
 
 
 @app.get("/api/repositories")
+@app.get(f"{DASHBOARD_PREFIX}/api/repositories")
 async def repositories() -> dict[str, list[str]]:
     return {"repositories": configured_repositories()}
 
 
 @app.get("/api/snapshot")
+@app.get(f"{DASHBOARD_PREFIX}/api/snapshot")
 async def snapshot(repo: str = Query(...), force: bool = Query(False)) -> dict[str, object]:
     try:
         return await aggregator.snapshot(repo, force=force)
@@ -41,6 +49,7 @@ DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 ASSETS = DIST / "assets"
 if ASSETS.exists():
     app.mount("/assets", StaticFiles(directory=ASSETS), name="assets")
+    app.mount(f"{DASHBOARD_PREFIX}/assets", StaticFiles(directory=ASSETS), name="dashboard-assets")
 
 
 @app.get("/{path:path}", include_in_schema=False)
@@ -52,4 +61,3 @@ async def frontend(path: str):
             return FileResponse(requested)
         return FileResponse(index)
     raise HTTPException(status_code=404, detail="Frontend build not found")
-
