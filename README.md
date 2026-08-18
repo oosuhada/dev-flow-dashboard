@@ -4,21 +4,20 @@ GitHub PR/commit 흐름과 Gemini 기반 AI Project Manager를 한 화면에서 
 
 **Live:** https://ontology.oosu.dev/dev_dashboard
 
-## Why this exists
+## Why I Built It / 만든 이유
 
-팀 프로젝트에서 PR이 수십 개씩 쌓이고 stacked PR과 선후관계까지 생기자, GitHub의 개별 PR 화면만으로는 **어디가 병목인지, 무엇부터 리뷰해야 하는지, 어떤 PR이 다른 작업을 막고 있는지** 팀 전체가 한눈에 파악하기 어려워졌습니다. 나 역시 현재 상태를 이해하려고 매번 여러 PR과 대화를 다시 확인해야 했고, 팀원 입장에서는 리뷰 우선순위를 정하기가 더 어려웠습니다.
+LLMs made coding faster, but that speed backfired — PRs piled up simultaneously, dependencies tangled, and merging one triggered a chain of rebases that consumed more time than the feature work itself. I built a dashboard that shows the team which PRs to review and merge first.
 
-그래서 PR dependency와 bottleneck을 그래프로 시각화하고, 지금 필요한 다음 행동을 바로 읽을 수 있는 개발 운영 화면을 만들었습니다. 이후에는 문서 정리에 시간이 과도하게 쓰이는 문제까지 함께 다루면서 **합의된 문서를 기준선으로 두고 먼저 코딩과 통합을 진행한 뒤 필요한 문서만 보정하는 execution flow**로 확장했습니다.
+코드 작업에 LLM이 도입되면서 개발 속도는 빨라졌지만, 오히려 PR이 동시다발적으로 쌓이면서 병목이 생기기 시작했습니다. 하나를 머지하면 나머지를 연쇄적으로 rebase해야 하고, 기능 구현보다 PR 정리에 시간이 더 드는 상황이 반복됐습니다. 뭐부터 리뷰하고 머지해야 하는지 팀 전체가 한눈에 볼 수 있는 화면을 만들었습니다.
 
-PR 수가 늘어나면 GitHub의 개별 PR 화면만으로는 다음 질문에 답하기 어려워집니다.
+### What It Clarifies / 해결하는 질문
 
 - 무엇부터 리뷰해야 하는가?
 - 다음 행동의 owner는 누구인가?
 - 어떤 PR이 downstream 작업을 막고 있는가?
 - 어떤 작업은 계속 진행하고, 어떤 작업은 폐기해야 하는가?
-- 팀이 문서 정리나 확장 작업에 머물지 않고 실제 E2E 완료 방향으로 가고 있는가?
 
-Dev Flow Dashboard는 **Git Graph 스타일의 deterministic 개발 흐름**을 source of truth로 두고, 그 위에 **Vertex AI tiered AI Project Manager**를 결합합니다. routine 판단은 Gemini 3.5 Flash-Lite, 기술 리뷰·대화처럼 reasoning이 필요한 작업은 Gemini 3.7 Flash를 사용합니다. AI는 GitHub 사실을 바꾸지 않고, 현재 팀이 무엇을 해야 하는지 해석하는 coordination layer로만 동작합니다.
+Dev Flow Dashboard는 Git Graph 스타일의 deterministic 개발 흐름을 source of truth로 두고, 그 위에 Vertex AI 기반 AI Project Manager를 coordination layer로 결합합니다.
 
 ## Screenshots
 
