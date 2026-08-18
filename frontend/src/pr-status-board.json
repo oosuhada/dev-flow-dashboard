@@ -1,17 +1,17 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T16:29:00+09:00",
-  "asOfLabel": "2026-08-20 16:29 KST 기준",
-  "updatedBy": "Final Convergence status refresh",
+  "updatedAt": "2026-08-20T17:40:41+09:00",
+  "asOfLabel": "2026-08-20 17:40 KST 기준",
+  "updatedBy": "Final Convergence + #47 absorption refresh",
   "headline": "지금 확인할 PR은 #92 하나",
-  "note": "Backend migration은 더 이상 stacked PR을 순차 merge/rebase하지 않는다. #80 Ontology는 이미 main에 merge됐고, #84/#85/#87/#88/#89/#90은 #92 검증용 참고 소스로만 유지한다. #47/#95/#96은 Backend Final Convergence와 별도 작업이다.",
+  "note": "Backend migration은 #92 하나로 수렴했다. #47 Mac mini 운영/모델 품질 변경도 최신 main 기반 #92에 흡수한 뒤 superseded close했고, #95와 #96은 이미 main에 merge됐다. #84/#85/#87/#88/#89/#90은 독립 merge하지 않는 Draft 참고 PR로만 유지한다.",
   "mergePlan": [
     {
       "order": 1,
       "tone": "final",
       "label": "Backend migration — 이것만 확인",
       "prs": [92],
-      "note": "현재 main은 30aa172…(#80 merge 포함)까지 전진했다. #92 remote HEAD d1bc2fa…는 DIRTY이므로 최신 main 위 Final Convergence tree를 다시 만들고 전체 검증 후 이 PR 하나만 review/merge한다."
+      "note": "최신 main a1e3ed2…(#95/#96/#80 merge 포함) 위에서 #92를 다시 구성했고 #47 Mac mini/모델 품질 변경까지 흡수했다. 새 HEAD a36f74c…는 CLEAN / MERGEABLE이며 architecture, backend-contract, Fast validation, Playwright, Docker CI가 모두 PASS했다."
     },
     {
       "order": 2,
@@ -19,25 +19,18 @@
       "label": "Superseded stack — 독립 merge 금지",
       "prs": [84, 85, 87, 88, 89, 90],
       "note": "이 PR들은 더 이상 순서대로 rebase/merge하지 않는다. #92 final tree의 구현 누락 검증용으로만 보고, #92 새 HEAD가 green이면 superseded comment 후 close한다."
-    },
-    {
-      "order": 3,
-      "tone": "cicd",
-      "label": "별도 작업 — #92와 섞지 않음",
-      "prs": [47, 95, 96],
-      "note": "#47 Mac mini/모델 품질, #95 Asset detail report contract, #96 Recommendation policy/Gold seed는 Backend migration convergence와 독립이다. 각각 필요할 때 별도로 검토한다."
     }
   ],
   "items": [
     {
       "number": 92,
       "area": "Backend Final Convergence",
-      "status": "progress",
+      "status": "review",
       "sequence": "NOW",
       "lane": "final",
-      "decision": "Backend migration 유일 확인 대상 · 최신 main refresh 필요",
-      "summary": "remote HEAD d1bc2fa…. 현재 GitHub 기준 CONFLICTING / DIRTY. 작업 중 로컬 Final Convergence tree에서는 legacy package 0, app/runtime 0, strict architecture PASS, domain migration 44 passed, Python 전체 366 passed · 10 skipped · 109 subtests, frontend lint/unit 54/build PASS까지 확인했다. 다만 그 검증 기준 main은 75c4d8d였고 이후 #80 Ontology가 merge되어 최신 main은 30aa172…가 됐다.",
-      "action": "30aa172… 최신 main에서 stacked ancestry를 재현하지 말고 final tree를 한 번만 재구성 → Playwright/Docker 포함 전체 검증 → remote-head guard → #92 push → 새 HEAD CI/자동리뷰 green 확인. 완료되면 #84/#85/#87/#88/#89/#90 close"
+      "decision": "Backend migration 유일 확인 대상 · Review-ready",
+      "summary": "HEAD a36f74c…. 최신 main a1e3ed2… 위 Final Convergence를 재구성하고 #47 Mac mini 운영/CNC·Compressor 모델 품질 변경까지 canonical tree에 흡수했다. #47은 superseded close 완료. legacy package 0, app/runtime 0, strict architecture PASS. 핵심 회귀 72 passed · 8 skipped, Python 전체 382 passed · 10 skipped · 109 subtests, frontend lint + unit 54 + build PASS. GitHub 새-head architecture / backend-contract / Fast validation / Playwright MVP E2E / Docker runtime smoke 전부 PASS, CLEAN / MERGEABLE.",
+      "action": "#92만 최종 리뷰 요청/merge. #84/#85/#87/#88/#89/#90은 Draft 참고용으로 두고 #92 merge 후 superseded close"
     },
     {
       "number": 84,
@@ -98,36 +91,6 @@
       "decision": "독립 merge/rebase 하지 않음",
       "summary": "HEAD 35a143d…. stacked base 기준 CLEAN. Report final tree 차이는 canonical final 구조에서 검증됐고 Report migration regression이 통과했다. 별도 stacked merge는 필요하지 않다.",
       "action": "#92 참고 소스로만 유지 → 새 #92 green 후 superseded comment + close"
-    },
-    {
-      "number": 47,
-      "area": "Mac mini 운영 / 모델 품질",
-      "status": "blocked",
-      "sequence": "SEPARATE A",
-      "lane": "cicd",
-      "decision": "#92와 별도 · 현재 main 기준 DIRTY",
-      "summary": "HEAD bb2a01d…. Mac mini 운영 전환과 CNC/Compressor 모델 품질 작업. #92 기존 tree에 섞여 있던 #47 전용 변경은 Final Convergence 작업에서 분리했다. 현재 GitHub 기준 main과 충돌 상태지만 Backend migration 완료를 막는 blocker는 아니다.",
-      "action": "Backend migration과 독립적으로 필요할 때 최신 main 정렬/검증. #92에 흡수하거나 superseded close하지 않음"
-    },
-    {
-      "number": 95,
-      "area": "Asset detail report contract",
-      "status": "review",
-      "sequence": "SEPARATE B",
-      "lane": "cicd",
-      "decision": "독립 docs PR · CLEAN · Review pending",
-      "summary": "HEAD 7a1d46c…. main 기반 독립 문서 PR이며 현재 GitHub 기준 CLEAN / MERGEABLE. Backend Final Convergence와 dependency가 없다.",
-      "action": "필요하면 #92와 무관하게 별도 human review/merge"
-    },
-    {
-      "number": 96,
-      "area": "Recommendation policy / Gold seed plan",
-      "status": "review",
-      "sequence": "SEPARATE C",
-      "lane": "cicd",
-      "decision": "독립 docs PR · CLEAN · Review pending",
-      "summary": "HEAD b617fb6…. 추천 정책 v1 / Gold seed planning 문서 PR이며 현재 GitHub 기준 CLEAN / MERGEABLE. Backend migration convergence에 포함하지 않는다.",
-      "action": "필요하면 #92와 무관하게 별도 human review/merge"
     }
   ]
 }
