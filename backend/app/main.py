@@ -115,7 +115,12 @@ async def _load_project_memory(force: bool = False) -> dict[str, object]:
         if current is not None:
             return current
         raise RuntimeError(f"Project context repository is not configured: {PROJECT_CONTEXT_REPO}")
-    snapshot_data = await aggregator.snapshot(PROJECT_CONTEXT_REPO, force=force)
+    try:
+        snapshot_data = await aggregator.snapshot(PROJECT_CONTEXT_REPO, force=force)
+    except RuntimeError:
+        if current is not None:
+            return current
+        raise
     ref = snapshot_data.get("headSha")
     if not isinstance(ref, str) or not ref:
         raise RuntimeError("Project context repository has no default-branch HEAD")
@@ -153,7 +158,13 @@ async def _run_project_pm(
             memory = await _load_project_memory(force=refresh_docs)
             snapshots: dict[str, dict[str, object]] = {}
             for repo in configured_repositories():
-                snapshots[repo] = await aggregator.snapshot(repo, force=repo == trigger_repo)
+                try:
+                    snapshots[repo] = await aggregator.snapshot(repo, force=repo == trigger_repo)
+                except RuntimeError:
+                    stale = aggregator.stale_snapshot(repo)
+                    if stale is None:
+                        raise
+                    snapshots[repo] = stale
             pull_detail_data = None
             if number is not None:
                 try:
@@ -166,6 +177,7 @@ async def _run_project_pm(
                 memory,
                 pull_detail_data,
             )
+            snapshot_id = activity_store.add_pm_snapshot(project_state)
             activity_store.add(
                 source="ai_pm",
                 repository=trigger_repo,
@@ -178,6 +190,7 @@ async def _run_project_pm(
                 metadata={
                     "projectHealth": project_state.get("projectHealth"),
                     "analysisSequence": project_state.get("analysisSequence"),
+                    "pmSnapshotId": snapshot_id,
                     "trigger": project_state.get("trigger"),
                 },
             )
@@ -246,6 +259,9 @@ async def start_github_watcher() -> None:
     global _watch_task
     if _watch_task is None or _watch_task.done():
         _watch_task = asyncio.create_task(_watch_github())
+    current_project_state = ai_advisor.project_state()
+    if current_project_state is not None:
+        activity_store.add_pm_snapshot(current_project_state)
     if configured_repositories():
         _schedule_project_pm(PROJECT_CONTEXT_REPO if PROJECT_CONTEXT_REPO in configured_repositories() else configured_repositories()[0], "startup", "initial-sync", None)
 
@@ -378,6 +394,22 @@ async def activity(limit: int = Query(300, ge=1, le=1000), repo: str | None = Qu
     return {"items": items, "count": len(items)}
 
 
+@app.get("/api/ai/project-history")
+@app.get(f"{DASHBOARD_PREFIX}/api/ai/project-history")
+async def ai_project_history(limit: int = Query(100, ge=1, le=500)) -> dict[str, object]:
+    items = activity_store.list_pm_snapshots(limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/ai/project-history/{snapshot_id}")
+@app.get(f"{DASHBOARD_PREFIX}/api/ai/project-history/{{snapshot_id}}")
+async def ai_project_history_detail(snapshot_id: int) -> dict[str, object]:
+    state = activity_store.get_pm_snapshot(snapshot_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="PM snapshot not found")
+    return state
+
+
 @app.get("/api/ai/project")
 @app.get(f"{DASHBOARD_PREFIX}/api/ai/project")
 async def ai_project(force: bool = Query(False)) -> dict[str, object]:
@@ -386,13 +418,22 @@ async def ai_project(force: bool = Query(False)) -> dict[str, object]:
     current = ai_advisor.project_state()
     if force or current is None:
         try:
-            memory = await _load_project_memory(force=force)
-            snapshots = {repo: await aggregator.snapshot(repo, force=force) for repo in configured_repositories()}
+            memory = await _load_project_memory(force=False)
+            snapshots: dict[str, dict[str, object]] = {}
+            for repo in configured_repositories():
+                try:
+                    snapshots[repo] = await aggregator.snapshot(repo, force=force)
+                except RuntimeError:
+                    stale = aggregator.stale_snapshot(repo)
+                    if stale is None:
+                        raise
+                    snapshots[repo] = stale
             current = await ai_advisor.analyze_project(
                 snapshots,
                 {"repository": "project", "event": "manual", "action": "force" if force else "initial", "number": None},
                 memory,
             )
+            activity_store.add_pm_snapshot(current)
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     return current or {"status": "analyzing", "model": ai_advisor.model}
@@ -481,6 +522,9 @@ async def snapshot(repo: str = Query(...), force: bool = Query(False)) -> dict[s
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        stale = aggregator.stale_snapshot(repo)
+        if stale is not None:
+            return {**stale, "warning": str(exc)}
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

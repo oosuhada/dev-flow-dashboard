@@ -32,6 +32,8 @@ import {
   askAIProject,
   loadAICommit,
   loadAIProject,
+  loadAIProjectHistory,
+  loadAIProjectHistoryDetail,
   loadActivity,
   loadCommit,
   loadFile,
@@ -40,6 +42,7 @@ import {
   loadSnapshot,
   type AICommitAnalysis,
   type AIChatMessage,
+  type AIProjectHistoryItem,
   type AIProjectState,
   type ActivityItem,
   type CommitDetail,
@@ -63,6 +66,9 @@ const GRAPH_COLORS = [
 ];
 const shortDate = (value: string) => new Intl.DateTimeFormat(undefined, {
   month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+}).format(new Date(value));
+const shortTime = (value: string) => new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit", minute: "2-digit",
 }).format(new Date(value));
 
 function laneColor(lane: number) {
@@ -534,11 +540,15 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
   onMarkActivityRead: () => void;
   onRefreshActivity: () => void;
 }) {
-  const [tab, setTab] = useState<"pm" | "chat">("pm");
+  const [tab, setTab] = useState<"pm" | "chat" | "activity">("pm");
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [messages, setMessages] = useState<AIChatMessage[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>(["그 다음에 뭐할까?", "지금 가장 큰 병목은 뭐야?", "각 팀원이 지금 해야 할 일 알려줘"]);
+  const [history, setHistory] = useState<AIProjectHistoryItem[]>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<AIProjectState | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [collapsedBuckets, setCollapsedBuckets] = useState<Set<string>>(() => new Set(["older"]));
 
   const groupedActivity = useMemo(() => {
@@ -547,14 +557,32 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     return groups;
   }, [activity]);
 
-  function selectTab(value: "pm" | "chat") {
+  function selectTab(value: "pm" | "chat" | "activity") {
     setTab(value);
-    if (value === "pm") onMarkActivityRead();
+    if (value === "activity") onMarkActivityRead();
   }
 
   useEffect(() => {
-    if (tab === "pm" && activity.length > 0) onMarkActivityRead();
+    if (tab === "activity" && activity.length > 0) onMarkActivityRead();
   }, [tab, activity[0]?.id]);
+
+  useEffect(() => {
+    setHistoryLoading(true);
+    void loadAIProjectHistory(100).then(setHistory).catch(() => undefined).finally(() => setHistoryLoading(false));
+  }, [state?.generatedAt]);
+
+  async function selectSnapshot(id: number | null) {
+    setSelectedSnapshotId(id);
+    if (id === null) {
+      setSelectedSnapshot(null);
+      return;
+    }
+    setSelectedSnapshot(null);
+    setHistoryLoading(true);
+    try { setSelectedSnapshot(await loadAIProjectHistoryDetail(id)); }
+    catch { setSelectedSnapshotId(null); setSelectedSnapshot(null); }
+    finally { setHistoryLoading(false); }
+  }
 
   function toggleBucket(bucket: string) {
     setCollapsedBuckets((current) => {
@@ -580,33 +608,52 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
     } finally { setChatLoading(false); }
   }
 
+  const displayState = selectedSnapshotId === null ? state : selectedSnapshot;
+  const judgedAt = displayState?.generatedAt ?? "";
+  const historicalItems = history;
+
   return <aside className="ai-sidebar" data-testid="ai-project-manager">
     <header className="ai-sidebar-head">
       <div><Sparkles size={13}/><strong>AI Project Manager</strong>{loading && <small>re-evaluating…</small>}</div>
       <button onClick={onRefresh} title="Re-evaluate now"><RefreshCw size={12}/></button>
     </header>
-    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => selectTab("pm")}><Bell size={11}/> PM {unreadCount > 0 && <span className="activity-unread">{unreadCount > 99 ? "99+" : unreadCount}</span>}</button><button className={tab === "chat" ? "active" : ""} onClick={() => selectTab("chat")}>Chat</button></nav>
+    <nav className="ai-sidebar-tabs"><button className={tab === "pm" ? "active" : ""} onClick={() => selectTab("pm")}>PM</button><button className={tab === "chat" ? "active" : ""} onClick={() => selectTab("chat")}>Chat</button><button className={tab === "activity" ? "active" : ""} onClick={() => selectTab("activity")}><Bell size={11}/> Activity {unreadCount > 0 && <span className="activity-unread">{unreadCount > 99 ? "99+" : unreadCount}</span>}</button></nav>
     {tab === "pm" ? <div className="pm-timeline">
+      <section className="pm-history-nav">
+        <div className="pm-history-title"><strong>Judgement history</strong><span>{history.length} snapshots</span>{historyLoading && <small>loading…</small>}</div>
+        <div className="pm-history-rail">
+          <button className={`pm-history-point live ${selectedSnapshotId === null ? "active" : ""}`} onClick={() => void selectSnapshot(null)}><span>LIVE</span>{state?.generatedAt && <time>{shortTime(state.generatedAt)}</time>}</button>
+          {historicalItems.map((item) => <button key={item.id} className={`pm-history-point ${selectedSnapshotId === item.id ? "active" : ""}`} onClick={() => void selectSnapshot(item.id)} title={item.headline ?? undefined}>
+            <span>{shortTime(item.createdAt)}</span><time>{shortDate(item.createdAt)}</time><small>{item.projectHealth ?? "PM"}{item.currentStep?.number ? ` · Step ${item.currentStep.number}` : ""}</small>
+          </button>)}
+        </div>
+      </section>
+      {selectedSnapshotId !== null && <div className="pm-history-mode"><span>Historical judgement · snapshot #{selectedSnapshotId}</span><button onClick={() => void selectSnapshot(null)}>Back to live</button></div>}
       <section className="pm-current">
-        <div className="pm-current-head"><strong>Current</strong>{state?.generatedAt && <time>{shortDate(state.generatedAt)}</time>}</div>
-        <div className="pm-current-body">
-          <div className="pm-status-row"><span className={`pm-health health-${(state?.projectHealth ?? "loading").toLowerCase()}`}>{state?.projectHealth ?? "ANALYZING"}</span>{state?.currentStep && <span className="pm-step">Step {state.currentStep.number} · {state.currentStep.name}</span>}</div>
-          <div className="ai-headline"><span>NOW</span><strong>{state?.headline || "Project Manager가 현재 상태를 읽는 중입니다…"}</strong></div>
-          {state?.currentObjective && <div className="pm-objective"><strong>Current objective</strong><span>{state.currentObjective}</span></div>}
-          {state?.healthReason && <p className="ai-summary">{state.healthReason}</p>}
-          <section className="pm-team-list"><h3>Team · NOW</h3>{(state?.teamActions ?? []).map((action) => <article key={action.github} className="pm-team-card">
+        <div className="pm-current-head"><strong>{selectedSnapshotId === null ? "Live judgement" : "Saved judgement"}</strong>{judgedAt && <time>{shortDate(judgedAt)}</time>}</div>
+        {selectedSnapshotId !== null && displayState === null ? <div className="pm-snapshot-loading">Loading saved judgement…</div> : <div className="pm-current-body">
+          <div className="pm-status-row"><span className={`pm-health health-${(displayState?.projectHealth ?? "loading").toLowerCase()}`}>{displayState?.projectHealth ?? "ANALYZING"}</span>{displayState?.currentStep && <span className="pm-step">Step {displayState.currentStep.number} · {displayState.currentStep.name}</span>}</div>
+          <div className="ai-headline"><span>{judgedAt ? shortTime(judgedAt) : "--:--"}</span><strong>{displayState?.headline || "Project Manager가 현재 상태를 읽는 중입니다…"}</strong></div>
+          {displayState?.currentObjective && <div className="pm-objective"><strong>Current objective</strong><span>{displayState.currentObjective}</span></div>}
+          {displayState?.healthReason && <p className="ai-summary">{displayState.healthReason}</p>}
+          <section className="pm-team-list"><h3>Team · judged {judgedAt ? shortTime(judgedAt) : "--:--"}</h3>{(displayState?.teamActions ?? []).map((action) => <article key={action.github} className="pm-team-card">
             <header><strong>{action.name}</strong><code>@{action.github}</code><span>{action.role}</span></header>
-            <div className="pm-now"><small>NOW</small><strong>{action.now}</strong></div>
+            <div className="pm-now"><small>{judgedAt ? shortTime(judgedAt) : "--:--"}</small><strong>{action.now}</strong></div>
             <p>{action.whyNow}</p>
             {action.nextHandoff && <div className="pm-handoff"><span>Handoff</span>{action.nextHandoff}</div>}
             {action.relatedWork?.length ? <div className="pm-related">{action.relatedWork.map((work) => <button key={`${work.repository}-${work.pr}`} onClick={() => onSelectPull(work.repository, work.pr)}>{work.repository === currentRepo ? "PR" : work.repository.split("/").at(-1)} #{work.pr}</button>)}</div> : null}
           </article>)}</section>
-          {(state?.antiPatternAlerts ?? []).length > 0 && <section className="pm-alerts"><h3>PM warnings</h3>{state?.antiPatternAlerts?.slice(0, 4).map((alert, index) => <article key={`${alert.title}-${index}`} className={`pm-alert severity-${alert.severity}`}><header><AlertTriangle size={11}/><strong>{alert.title}</strong></header><p>{alert.reason}</p><div><span>STOP</span>{alert.stopDoing}</div><div><span>DO</span>{alert.doInstead}</div></article>)}</section>}
-          <section className="pm-queue"><h3>PR queue</h3>{(state?.prPriorities ?? []).slice(0, 10).map((item) => <button key={`${item.repository}-${item.number}`} onClick={() => onSelectPull(item.repository, item.number)}><span className="ai-rank">{item.rank}</span><strong>{item.repository.split("/").at(-1)} #{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><p>{item.nextAction}</p></button>)}</section>
-        </div>
+          {(displayState?.antiPatternAlerts ?? []).length > 0 && <section className="pm-alerts"><h3>PM warnings</h3>{displayState?.antiPatternAlerts?.slice(0, 4).map((alert, index) => <article key={`${alert.title}-${index}`} className={`pm-alert severity-${alert.severity}`}><header><AlertTriangle size={11}/><strong>{alert.title}</strong></header><p>{alert.reason}</p><div><span>STOP</span>{alert.stopDoing}</div><div><span>DO</span>{alert.doInstead}</div></article>)}</section>}
+          <section className="pm-queue"><h3>PR queue</h3>{(displayState?.prPriorities ?? []).slice(0, 10).map((item) => <button key={`${item.repository}-${item.number}`} onClick={() => onSelectPull(item.repository, item.number)}><span className="ai-rank">{item.rank}</span><strong>{item.repository.split("/").at(-1)} #{item.number}</strong><span className={`ai-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><p>{item.nextAction}</p></button>)}</section>
+        </div>}
       </section>
-      <div className="activity-toolbar"><div><Bell size={12}/><strong>PM timeline</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh timeline"><RefreshCw size={11}/></button></div>
-      {activity.length === 0 && <div className="activity-empty">GitHub 변화와 AI PM 판단이 여기에 누적됩니다.</div>}
+    </div> : tab === "chat" ? <div className="ai-chat">
+      <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={18}/><strong>프로젝트 맥락을 기억하고 있습니다.</strong><span>다음 작업, 병목, 팀원별 역할, PR 우선순위를 물어보세요.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>)}{chatLoading && <div className="ai-chat-thinking">Gemini가 현재 PM 상태를 확인하는 중…</div>}</div>
+      {suggestions.length > 0 && <div className="ai-chat-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void sendChat(suggestion)}>{suggestion}</button>)}</div>}
+      <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="그 다음에 뭐할까?" rows={2}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
+    </div> : <div className="activity-inbox">
+      <div className="activity-toolbar"><div><Bell size={12}/><strong>Live activity</strong><span>{activity.length} stored</span></div><button onClick={onRefreshActivity} title="Refresh activity"><RefreshCw size={11}/></button></div>
+      {activity.length === 0 && <div className="activity-empty">GitHub 변화가 들어오면 여기에 누적됩니다.</div>}
       {(["1h", "1d", "1w", "older"] as const).map((bucket) => {
         const items = groupedActivity[bucket];
         if (items.length === 0) return null;
@@ -620,10 +667,6 @@ function AIProjectSidebar({ state, loading, currentRepo, activity, unreadCount, 
           </button>)}</div>}
         </section>;
       })}
-    </div> : <div className="ai-chat">
-      <div className="ai-chat-messages">{messages.length === 0 && <div className="ai-chat-empty"><Sparkles size={18}/><strong>프로젝트 맥락을 기억하고 있습니다.</strong><span>다음 작업, 병목, 팀원별 역할, PR 우선순위를 물어보세요.</span></div>}{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>)}{chatLoading && <div className="ai-chat-thinking">Gemini가 현재 PM 상태를 확인하는 중…</div>}</div>
-      {suggestions.length > 0 && <div className="ai-chat-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void sendChat(suggestion)}>{suggestion}</button>)}</div>}
-      <form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); void sendChat(); }}><textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="그 다음에 뭐할까?" rows={2}/><button disabled={!chatInput.trim() || chatLoading}>Send</button></form>
     </div>}
   </aside>;
 }

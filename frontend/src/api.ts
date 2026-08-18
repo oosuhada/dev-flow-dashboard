@@ -189,6 +189,17 @@ export type ActivityItem = {
   metadata?: Record<string, unknown>;
 };
 
+export type AIProjectHistoryItem = {
+  id: number;
+  createdAt: string;
+  model?: string | null;
+  projectHealth?: string | null;
+  currentStep?: { number?: number | null; name?: string | null } | null;
+  headline?: string | null;
+  analysisSequence?: number | null;
+  trigger?: { repository?: string; event?: string; action?: string | null; number?: number | null };
+};
+
 async function json<T>(url: string): Promise<T> {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
   if (!response.ok) {
@@ -250,4 +261,13 @@ export async function askAIProject(question: string, history: AIChatMessage[]): 
 export async function loadActivity(limit = 300): Promise<ActivityItem[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   return (await json<{ items: ActivityItem[] }>(`${API_BASE}/activity?${params}`)).items;
+}
+
+export async function loadAIProjectHistory(limit = 100): Promise<AIProjectHistoryItem[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return (await json<{ items: AIProjectHistoryItem[] }>(`${API_BASE}/ai/project-history?${params}`)).items;
+}
+
+export async function loadAIProjectHistoryDetail(id: number): Promise<AIProjectState> {
+  return json<AIProjectState>(`${API_BASE}/ai/project-history/${id}`);
 }

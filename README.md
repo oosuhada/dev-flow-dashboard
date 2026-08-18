@@ -21,9 +21,16 @@ The dashboard also runs a project-level AI PM. It reads the canonical project do
 `DEV_FLOW_PROJECT_CONTEXT_REPO`, extracts a persistent project charter (goal, ownership,
 execution steps, out-of-scope work, and anti-overengineering rules), and combines that
 charter with the live state of all configured repositories. The left resizable AI panel
-shows the current execution step, one concrete NOW action for each team member, PR
-priorities, and PM warnings. Its Chat tab uses the same project memory for questions such
-as "그 다음에 뭐할까?" without restarting from a blank prompt.
+shows the current execution step, timestamped team actions, PR priorities, and PM warnings.
+Every completed PM judgement is stored as a SQLite snapshot, so the PM tab can move along
+the judgement timeline and restore the full team actions/warnings/queue from an earlier
+point in time. GitHub webhook events remain a separate Activity inbox, while the Chat tab
+uses the same project memory for questions such as "그 다음에 뭐할까?" without restarting
+from a blank prompt.
+
+The last successful GitHub repository snapshot is also persisted under `.state/snapshots/`.
+If GitHub temporarily rate-limits the server, the workbench remains available from that
+stale snapshot while live updates retry in the background.
 
 The AI panel, right commit/PR inspector, and Pull Request table columns are resizable so
 the graph/list remains the primary workspace rather than being covered by AI output.
