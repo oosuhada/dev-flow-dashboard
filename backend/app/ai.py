@@ -200,8 +200,16 @@ class VertexAIAdvisor:
         compact: dict[str, Any] = {}
         for repo, snapshot in sorted(snapshots.items()):
             repo_state = self._compact_snapshot(snapshot)
+            # Fallback polling is a recovery path, not a second event stream.
+            # Ignore raw default-branch/commit churn and bot review prose so a
+            # missed push or automated comment cannot manufacture a PM call.
+            # Actionable PR topology, human reviews and CI/check state remain
+            # in the fingerprint and will still recover missed webhooks.
+            repo_state.pop("headSha", None)
+            repo_state.pop("recentCommits", None)
             for pull in repo_state.get("openPullRequests", []):
                 pull.pop("updatedAt", None)
+                pull.pop("botReviews", None)
             for pull in repo_state.get("recentPullHistory", []):
                 pull.pop("updatedAt", None)
             compact[repo] = repo_state

@@ -205,6 +205,18 @@ def test_project_semantic_revision_ignores_volatile_updated_at(monkeypatch, tmp_
     revision_b = advisor.project_semantic_revision({"A/one": second}, {"revision": "docs-v1"})
     assert revision_a == revision_b
 
+    # Raw push/default-head churn and automated review prose are not reasons
+    # for fallback polling to spend another PM call.
+    second["headSha"] = "def"
+    second["commits"] = [
+        {"sha": "def", "message": "bot-only push", "author": "bot", "timestamp": "now"}
+    ]
+    second["pulls"][0]["reviews"] = [
+        {"user": "github-actions[bot]", "state": "COMMENTED", "body": "automated", "isBot": True}
+    ]
+    revision_noise = advisor.project_semantic_revision({"A/one": second}, {"revision": "docs-v1"})
+    assert revision_noise == revision_a
+
     second["pulls"][0]["mergeableState"] = "blocked"
     revision_c = advisor.project_semantic_revision({"A/one": second}, {"revision": "docs-v1"})
     assert revision_c != revision_a
