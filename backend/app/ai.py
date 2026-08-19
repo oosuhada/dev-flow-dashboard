@@ -224,10 +224,13 @@ class VertexAIAdvisor:
         return {
             "day": day,
             "timezone": self.budget_timezone,
-            # Compatibility totals retained for the existing UI.
-            "calls": paid_calls + free_calls,
+            # Compatibility fields remain the billable budget counters because
+            # the existing UI compares them with callLimit/inputTokenLimit.
+            # Free-tier usage is reported separately below and must not make the
+            # paid budget gauge look exhausted faster than it actually is.
+            "calls": paid_calls,
             "callLimit": self.auto_daily_call_limit,
-            "inputTokens": paid_input_tokens + free_input_tokens,
+            "inputTokens": paid_input_tokens,
             "inputTokenLimit": self.auto_daily_input_token_limit,
             "paidCalls": paid_calls,
             "paidInputTokens": paid_input_tokens,
