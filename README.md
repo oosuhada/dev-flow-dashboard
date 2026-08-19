@@ -16,7 +16,7 @@ PR 수가 늘어나면 GitHub의 개별 PR 화면만으로는 다음 질문에 �
 - 어떤 작업은 계속 진행하고, 어떤 작업은 폐기해야 하는가?
 - 팀이 문서 정리나 확장 작업에 머물지 않고 실제 E2E 완료 방향으로 가고 있는가?
 
-Dev Flow Dashboard는 **Git Graph 스타일의 deterministic 개발 흐름**을 source of truth로 두고, 그 위에 **Vertex AI Gemini 3.7 Flash 기반 AI Project Manager**를 결합합니다. AI는 GitHub 사실을 바꾸지 않고, 현재 팀이 무엇을 해야 하는지 해석하는 coordination layer로만 동작합니다.
+Dev Flow Dashboard는 **Git Graph 스타일의 deterministic 개발 흐름**을 source of truth로 두고, 그 위에 **Vertex AI tiered AI Project Manager**를 결합합니다. routine 판단은 Gemini 3.5 Flash-Lite, 기술 리뷰·대화처럼 reasoning이 필요한 작업은 Gemini 3.7 Flash를 사용합니다. AI는 GitHub 사실을 바꾸지 않고, 현재 팀이 무엇을 해야 하는지 해석하는 coordination layer로만 동작합니다.
 
 ## Screenshots
 
@@ -73,7 +73,7 @@ Density level이 올라갈 때 commit row height와 SVG graph 좌표도 함께 �
 
 AI PM은 프로젝트의 canonical docs와 현재 GitHub 상태를 함께 읽습니다.
 
-- **Gemini 3.7 Flash on Vertex AI**
+- **Tiered Vertex AI**: routine PM refresh는 `gemini-3.5-flash-lite`, 사람 기술 리뷰/코멘트와 대화·commit reasoning은 `gemini-3.7-flash`
 - canonical project docs에서 goal, role ownership, execution steps, out-of-scope, anti-overengineering rule을 추출한 Project Charter Memory
 - 직전 PM context와 최근 webhook trigger를 다음 판단에 전달하는 rolling context
 - 네 명의 팀원별 현재 `NOW` action
@@ -121,7 +121,10 @@ GitHub webhook과 AI PM 판단을 SQLite Activity store에 기록하고 SSE로 �
 
 - GitHub webhook → server-side snapshot refresh
 - webhook/AI/activity event → SSE live update
-- noisy CI event는 짧게 coalesce해 stale AI queue 방지
+- webhook/SSE 갱신과 AI 재분석은 분리: bot/social noise는 deterministic UI만 갱신하고 Vertex를 호출하지 않음
+- `check_run`/`check_suite`/`workflow_run`, PR synchronize, fallback 변화는 3~5분 quiet period로 coalesce
+- startup/fallback에서 compact semantic snapshot hash가 이전 판단과 같으면 Vertex 호출 생략
+- 자동 PM은 기본 KST 일일 30회 또는 input 1,250,000 tokens에서 soft-stop하며 수동 refresh/chat은 계속 사용 가능
 - 마지막 성공 GitHub snapshot을 `.state/snapshots/`에 저장
 - GitHub rate limit 또는 일시 장애 시 stale snapshot으로 workbench 유지
 - AI PM judgement와 Activity는 SQLite에 보존
@@ -156,7 +159,9 @@ GitHub repositories
                       ├─ stale snapshot fallback
                       ├─ SQLite activity + PM history
                       ├─ Project Charter Memory
-                      └─ Vertex AI Gemini 3.7 Flash
+                      └─ Vertex AI tier router
+                           ├─ Gemini 3.5 Flash-Lite (routine)
+                           └─ Gemini 3.7 Flash (reasoning/review)
                              │
                              ├─ SSE live events
                              └─ /api/*

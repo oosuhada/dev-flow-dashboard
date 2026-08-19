@@ -26,7 +26,7 @@ aggregator = GitHubAggregator()
 _watch_task: asyncio.Task[None] | None = None
 _background_tasks: set[asyncio.Task[None]] = set()
 _ci_ai_tasks: dict[str, asyncio.Task[None]] = {}
-_project_ci_task: asyncio.Task[None] | None = None
+_project_debounce_tasks: dict[tuple[str, str, int | None], asyncio.Task[None]] = {}
 _project_ai_lock = asyncio.Lock()
 
 PROJECT_CONTEXT_REPO = os.getenv("DEV_FLOW_PROJECT_CONTEXT_REPO", "Biz-CollabCraft/ontology_dashboard")
@@ -47,6 +47,13 @@ def _watch_interval_seconds() -> int:
         return 120
 
 
+def _ai_debounce_seconds() -> int:
+    try:
+        return max(180, min(300, int(os.getenv("DEV_FLOW_AI_DEBOUNCE_SECONDS", "240"))))
+    except ValueError:
+        return 240
+
+
 def _webhook_secret() -> str:
     return os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
@@ -57,6 +64,106 @@ def _verify_webhook(body: bytes, signature: str | None) -> bool:
         return False
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(signature, f"sha256={digest}")
+
+
+def _webhook_sender_is_bot(payload: dict[str, object]) -> bool:
+    sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+    login = str(sender.get("login") or "").lower()
+    sender_type = str(sender.get("type") or "").lower()
+    return sender_type == "bot" or login.endswith("[bot]") or login in {
+        "vercel",
+        "vercel[bot]",
+        "github-actions",
+        "github-actions[bot]",
+    }
+
+
+def _technical_comment(body: object) -> bool:
+    text = str(body or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if lower in {
+        "lgtm",
+        "approve",
+        "approved",
+        "확인",
+        "확인했습니다",
+        "감사합니다",
+        "좋습니다",
+        "넵",
+        "네",
+        "ok",
+        "okay",
+    }:
+        return False
+    technical_tokens = (
+        "[p0]",
+        "[p1]",
+        "[p2]",
+        "[p3]",
+        "bug",
+        "error",
+        "fail",
+        "regression",
+        "architecture",
+        "contract",
+        "migration",
+        "api",
+        "database",
+        "db",
+        "test",
+        "code",
+        "버그",
+        "오류",
+        "실패",
+        "회귀",
+        "아키텍처",
+        "계약",
+        "마이그레이션",
+        "테스트",
+        "코드",
+        "수정",
+        "구현",
+        "변경",
+        "누락",
+        "위반",
+        "왜 ",
+        "어떻게",
+        "?",
+    )
+    return any(token in lower for token in technical_tokens)
+
+
+def _should_analyze_webhook(
+    payload: dict[str, object], event_name: str, action: str | None
+) -> bool:
+    """Keep deterministic live updates broad while keeping Vertex triggers narrow."""
+
+    if event_name in {"check_run", "check_suite", "workflow_run"}:
+        return True
+    if _webhook_sender_is_bot(payload):
+        return False
+    if event_name == "pull_request":
+        return action in {
+            "opened",
+            "reopened",
+            "edited",
+            "synchronize",
+            "ready_for_review",
+            "closed",
+        }
+    if event_name == "pull_request_review":
+        review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
+        state = str(review.get("state") or "").lower()
+        return action == "submitted" and (
+            state in {"approved", "changes_requested"}
+            or (state == "commented" and _technical_comment(review.get("body")))
+        )
+    if event_name in {"issue_comment", "pull_request_review_comment"}:
+        comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
+        return action == "created" and _technical_comment(comment.get("body"))
+    return False
 
 
 def _webhook_pm_context(payload: dict[str, object], event_name: str, action: str | None, number: int | None) -> dict[str, object]:
@@ -102,6 +209,7 @@ def _webhook_pm_context(payload: dict[str, object], event_name: str, action: str
             "body": clipped(pull.get("body"), 8000),
             "headSha": clipped(((pull.get("head") or {}).get("sha") if isinstance(pull.get("head"), dict) else None), 64),
             "mergeableState": clipped(pull.get("mergeable_state"), 120),
+            "merged": bool(pull.get("merged")),
         })
     elif event_name == "check_run":
         context.update({"check": clipped(check_run.get("name"), 300), "status": clipped(check_run.get("conclusion") or check_run.get("status"), 120)})
@@ -205,6 +313,12 @@ async def _run_project_pm(
         return
     async with _project_ai_lock:
         try:
+            if not ai_advisor.auto_pm_allowed():
+                for repo in configured_repositories():
+                    event_hub.publish(
+                        DashboardEvent(repo=repo, event="ai_project", action="budget-exhausted", number=number)
+                    )
+                return
             if event_name not in {"startup", "repository_changed"}:
                 await asyncio.sleep(0.6)
             memory = await _load_project_memory(force=refresh_docs)
@@ -217,6 +331,16 @@ async def _run_project_pm(
                     if stale is None:
                         raise
                     snapshots[repo] = stale
+            semantic_revision = ai_advisor.project_semantic_revision(snapshots, memory)
+            current_state = ai_advisor.project_state() or {}
+            if event_name in {"startup", "repository_changed", "ci_status_changed"} and (
+                current_state.get("semanticRevision") == semantic_revision
+            ):
+                for repo in configured_repositories():
+                    event_hub.publish(
+                        DashboardEvent(repo=repo, event="ai_project", action="unchanged-skip", number=number)
+                    )
+                return
             pull_detail_data = None
             if number is not None:
                 try:
@@ -232,6 +356,7 @@ async def _run_project_pm(
                 memory,
                 pull_detail_data,
             )
+            budget = ai_advisor.record_auto_pm_usage(project_state.get("usage"))
             snapshot_id = activity_store.add_pm_snapshot(project_state)
             activity_store.add(
                 source="ai_pm",
@@ -239,7 +364,7 @@ async def _run_project_pm(
                 event="ai_project",
                 action="completed",
                 number=number,
-                actor="gemini-3.7-flash",
+                actor=str(project_state.get("model") or ai_advisor.model),
                 title=str(project_state.get("headline") or "AI Project Manager updated"),
                 summary=" · ".join(str(item) for item in (project_state.get("changesSinceLast") or [])[:3]) or str(project_state.get("currentObjective") or ""),
                 metadata={
@@ -247,6 +372,7 @@ async def _run_project_pm(
                     "analysisSequence": project_state.get("analysisSequence"),
                     "pmSnapshotId": snapshot_id,
                     "trigger": project_state.get("trigger"),
+                    "budget": budget,
                 },
             )
             # Project PM is cross-repository. Broadcast completion to every open
@@ -266,31 +392,60 @@ def _schedule_project_pm(
     number: int | None,
     event_context: dict[str, object] | None = None,
 ) -> None:
-    global _project_ci_task
     if not ai_advisor.available:
         return
+    debounce_kind: str | None = None
+    normalized_event = event_name
+    normalized_action = action
     if event_name in {"check_run", "check_suite", "workflow_run"}:
-        if _project_ci_task is not None and not _project_ci_task.done():
-            _project_ci_task.cancel()
+        if number is None:
+            return
+        debounce_kind = "ci"
+        normalized_event = "ci_status_changed"
+        normalized_action = f"{event_name}:{action or 'updated'}"
+    elif event_name == "pull_request" and action in {"edited", "synchronize"}:
+        debounce_kind = "pull-request"
+    elif event_name == "repository_changed":
+        debounce_kind = "fallback"
 
-        async def after_ci_burst() -> None:
+    if debounce_kind is not None:
+        key = (repo, debounce_kind, number)
+        previous = _project_debounce_tasks.get(key)
+        if previous is not None and not previous.done():
+            previous.cancel()
+
+        async def after_quiet_period() -> None:
             try:
-                await asyncio.sleep(2.5)
+                await asyncio.sleep(_ai_debounce_seconds())
                 await _run_project_pm(
                     repo,
-                    "ci_status_changed",
-                    f"{event_name}:{action or 'updated'}",
+                    normalized_event,
+                    normalized_action,
                     number,
                     event_context=event_context,
                 )
             except asyncio.CancelledError:
                 return
+            finally:
+                current = _project_debounce_tasks.get(key)
+                if current is asyncio.current_task():
+                    _project_debounce_tasks.pop(key, None)
 
-        _project_ci_task = asyncio.create_task(after_ci_burst())
-        _background_tasks.add(_project_ci_task)
-        _project_ci_task.add_done_callback(_background_tasks.discard)
+        task = asyncio.create_task(after_quiet_period())
+        _project_debounce_tasks[key] = task
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
         return
-    refresh_docs = repo == PROJECT_CONTEXT_REPO and event_name == "push"
+
+    refresh_docs = bool(
+        event_name == "startup"
+        or (
+            repo == PROJECT_CONTEXT_REPO
+            and event_name == "pull_request"
+            and action == "closed"
+            and (event_context or {}).get("merged")
+        )
+    )
     task = asyncio.create_task(
         _run_project_pm(repo, event_name, action, number, refresh_docs=refresh_docs, event_context=event_context)
     )
@@ -352,6 +507,7 @@ async def stop_github_watcher() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
     _background_tasks.clear()
     _ci_ai_tasks.clear()
+    _project_debounce_tasks.clear()
 
 
 @app.get("/api/health")
@@ -367,8 +523,12 @@ async def health() -> dict[str, object]:
         "ai": {
             "enabled": ai_advisor.available,
             "model": ai_advisor.model,
+            "reasoningModel": ai_advisor.reasoning_model,
+            "simpleModel": ai_advisor.simple_model,
             "project": ai_advisor.project if ai_advisor.available else None,
             "triggerMode": ai_advisor.trigger_mode,
+            "debounceSeconds": _ai_debounce_seconds(),
+            "automaticBudget": ai_advisor.auto_budget_status(),
             "projectManager": True,
             "projectContextRepository": PROJECT_CONTEXT_REPO,
         },
@@ -457,7 +617,7 @@ async def github_webhook(request: Request) -> dict[str, object]:
         for subscribed_repo in configured_repositories():
             event_hub.publish(DashboardEvent(repo=subscribed_repo, event="activity", action=str(activity_id), number=number))
     event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
-    if event_name != "ping":
+    if event_name != "ping" and _should_analyze_webhook(payload, event_name, action):
         _schedule_project_pm(repo, event_name, action, number, _webhook_pm_context(payload, event_name, action, number))
     return {"accepted": True, "repo": repo, "event": event_name, "number": number}
 

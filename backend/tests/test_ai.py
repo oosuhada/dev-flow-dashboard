@@ -72,7 +72,7 @@ async def test_repository_analysis_keeps_rolling_context_and_filters_hallucinate
     advisor = VertexAIAdvisor()
     prompts: list[dict] = []
 
-    async def fake_generate(_system: str, prompt: str, max_output_tokens: int = 4096):
+    async def fake_generate(_system: str, prompt: str, max_output_tokens: int = 4096, **_kwargs):
         prompts.append(json.loads(prompt))
         return ({
             "headline": "do upstream first",
@@ -107,7 +107,7 @@ async def test_commit_analysis_filters_related_prs_and_caches_within_context(mon
     advisor.store.save("A/one", {"generatedAt": "v1", "contextSummary": "repo context"})
     calls = 0
 
-    async def fake_generate(_system: str, _prompt: str, max_output_tokens: int = 4096):
+    async def fake_generate(_system: str, _prompt: str, max_output_tokens: int = 4096, **_kwargs):
         nonlocal calls
         calls += 1
         return ({
@@ -145,7 +145,7 @@ async def test_project_pm_human_changes_requested_forces_author_fix_before_merge
     ]
     prompts: list[dict] = []
 
-    async def fake_generate(_system: str, prompt: str, max_output_tokens: int = 4096):
+    async def fake_generate(_system: str, prompt: str, max_output_tokens: int = 4096, **_kwargs):
         prompts.append(json.loads(prompt))
         return ({
             "headline": "merge #23 now",
@@ -192,3 +192,53 @@ async def test_project_pm_human_changes_requested_forces_author_fix_before_merge
     assert "재검증" in bob["now"]
     assert prompts[0]["trigger"]["eventContext"]["reviewBody"] == "fix shutdown"
     assert prompts[0]["unresolvedHumanChangesRequested"][0]["number"] == 23
+
+
+def test_project_semantic_revision_ignores_volatile_updated_at(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    advisor = VertexAIAdvisor()
+    first = snapshot()
+    second = snapshot()
+    second["pulls"][0]["updatedAt"] = "2026-08-19T12:34:56Z"
+
+    revision_a = advisor.project_semantic_revision({"A/one": first}, {"revision": "docs-v1"})
+    revision_b = advisor.project_semantic_revision({"A/one": second}, {"revision": "docs-v1"})
+    assert revision_a == revision_b
+
+    second["pulls"][0]["mergeableState"] = "blocked"
+    revision_c = advisor.project_semantic_revision({"A/one": second}, {"revision": "docs-v1"})
+    assert revision_c != revision_a
+
+
+def test_auto_pm_budget_enforces_daily_calls_and_input_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DEV_FLOW_AI_DAILY_CALL_LIMIT", "2")
+    monkeypatch.setenv("DEV_FLOW_AI_DAILY_INPUT_TOKEN_LIMIT", "10000")
+    advisor = VertexAIAdvisor()
+
+    assert advisor.auto_pm_allowed() is True
+    advisor.record_auto_pm_usage({"promptTokenCount": 4000})
+    assert advisor.auto_pm_allowed() is True
+    status = advisor.record_auto_pm_usage({"promptTokenCount": 4000})
+    assert status["calls"] == 2
+    assert status["inputTokens"] == 8000
+    assert status["automaticAllowed"] is False
+
+
+def test_project_model_tier_uses_reasoning_for_human_review(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    advisor = VertexAIAdvisor()
+
+    simple, simple_thinking = advisor.project_model_for(
+        {"event": "pull_request", "action": "opened"}
+    )
+    reasoning, reasoning_thinking = advisor.project_model_for(
+        {
+            "event": "pull_request_review",
+            "eventContext": {"reviewState": "changes_requested"},
+        }
+    )
+    assert simple == "gemini-3.5-flash-lite"
+    assert simple_thinking is None
+    assert reasoning == "gemini-3.7-flash"
+    assert reasoning_thinking == "MEDIUM"
