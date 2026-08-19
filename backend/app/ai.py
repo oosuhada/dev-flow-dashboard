@@ -5,8 +5,10 @@ import hashlib
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -46,14 +48,41 @@ class VertexAIAdvisor:
         self.enabled = os.getenv("DEV_FLOW_AI_ENABLED", "false").lower() == "true"
         self.project = os.getenv("DEV_FLOW_AI_PROJECT", "flai-oosuhada-20260506")
         self.location = os.getenv("DEV_FLOW_AI_LOCATION", "global")
-        self.model = os.getenv("DEV_FLOW_AI_MODEL", "gemini-3.7-flash")
+        self.reasoning_model = os.getenv(
+            "DEV_FLOW_AI_REASONING_MODEL",
+            os.getenv("DEV_FLOW_AI_MODEL", "gemini-3.7-flash"),
+        )
+        self.simple_model = os.getenv("DEV_FLOW_AI_SIMPLE_MODEL", "gemini-3.5-flash-lite")
+        # Compatibility alias used by existing API payloads/tests.
+        self.model = self.reasoning_model
         self.api_key = os.getenv("DEV_FLOW_AI_API_KEY", "")
-        self.trigger_mode = os.getenv("DEV_FLOW_AI_TRIGGER_MODE", "webhook-every-event")
+        configured_trigger_mode = os.getenv("DEV_FLOW_AI_TRIGGER_MODE", "meaningful-events")
+        # The old production value described the pre-guardrail implementation.
+        # Keep health output truthful even before the server environment is
+        # rewritten during deployment.
+        self.trigger_mode = (
+            "meaningful-events"
+            if configured_trigger_mode == "webhook-every-event"
+            else configured_trigger_mode
+        )
         self.store = AIStateStore()
         self._locks: dict[str, asyncio.Lock] = {}
         self._commit_cache: dict[str, dict[str, Any]] = {}
         self.project_state_key = "__project__"
         self.project_memory_key = "__project_memory__"
+        self.auto_budget_key = "__auto_pm_budget__"
+        self.auto_daily_call_limit = self._int_env("DEV_FLOW_AI_DAILY_CALL_LIMIT", 30, minimum=1)
+        self.auto_daily_input_token_limit = self._int_env(
+            "DEV_FLOW_AI_DAILY_INPUT_TOKEN_LIMIT", 1_250_000, minimum=10_000
+        )
+        self.budget_timezone = os.getenv("DEV_FLOW_AI_BUDGET_TIMEZONE", "Asia/Seoul")
+
+    @staticmethod
+    def _int_env(name: str, default: int, *, minimum: int) -> int:
+        try:
+            return max(minimum, int(os.getenv(name, str(default))))
+        except ValueError:
+            return default
 
     @property
     def available(self) -> bool:
@@ -68,26 +97,39 @@ class VertexAIAdvisor:
     def project_memory(self) -> dict[str, Any] | None:
         return self.store.load(self.project_memory_key)
 
-    def _url(self) -> str:
+    def _url(self, model: str | None = None) -> str:
+        selected = model or self.reasoning_model
         return (
             f"https://aiplatform.googleapis.com/v1/projects/{self.project}/locations/{self.location}"
-            f"/publishers/google/models/{self.model}:generateContent?key={self.api_key}"
+            f"/publishers/google/models/{selected}:generateContent?key={self.api_key}"
         )
 
-    async def _generate_json(self, system: str, prompt: str, max_output_tokens: int = 4096) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def _generate_json(
+        self,
+        system: str,
+        prompt: str,
+        max_output_tokens: int = 4096,
+        *,
+        model: str | None = None,
+        thinking_level: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.available:
             raise RuntimeError("AI advisor is not configured")
+        selected_model = model or self.reasoning_model
+        generation_config: dict[str, Any] = {
+            "temperature": 0.2,
+            "maxOutputTokens": max_output_tokens,
+            "responseMimeType": "application/json",
+        }
+        if thinking_level:
+            generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": max_output_tokens,
-                "responseMimeType": "application/json",
-            },
+            "generationConfig": generation_config,
         }
         async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(self._url(), json=body)
+            response = await client.post(self._url(selected_model), json=body)
         if response.status_code >= 400:
             raise RuntimeError(f"Vertex AI {response.status_code}: {response.text[:300]}")
         raw = response.json()
@@ -97,7 +139,100 @@ class VertexAIAdvisor:
             parsed = json.loads(text)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Vertex AI returned non-JSON output: {text[:220]}") from exc
-        return parsed, raw.get("usageMetadata") or {}
+        usage = dict(raw.get("usageMetadata") or {})
+        usage["model"] = selected_model
+        return parsed, usage
+
+    def _budget_day(self) -> str:
+        try:
+            zone = ZoneInfo(self.budget_timezone)
+        except Exception:
+            zone = ZoneInfo("UTC")
+        return datetime.now(zone).date().isoformat()
+
+    def auto_budget_status(self) -> dict[str, Any]:
+        day = self._budget_day()
+        stored = self.store.load(self.auto_budget_key) or {}
+        if stored.get("day") != day:
+            stored = {"day": day, "calls": 0, "inputTokens": 0}
+        calls = int(stored.get("calls") or 0)
+        input_tokens = int(stored.get("inputTokens") or 0)
+        allowed = (
+            calls < self.auto_daily_call_limit
+            and input_tokens < self.auto_daily_input_token_limit
+        )
+        return {
+            "day": day,
+            "timezone": self.budget_timezone,
+            "calls": calls,
+            "callLimit": self.auto_daily_call_limit,
+            "inputTokens": input_tokens,
+            "inputTokenLimit": self.auto_daily_input_token_limit,
+            "automaticAllowed": allowed,
+        }
+
+    def auto_pm_allowed(self) -> bool:
+        return bool(self.auto_budget_status()["automaticAllowed"])
+
+    def record_auto_pm_usage(self, usage: dict[str, Any] | None) -> dict[str, Any]:
+        status = self.auto_budget_status()
+        prompt_tokens = int((usage or {}).get("promptTokenCount") or 0)
+        payload = {
+            "day": status["day"],
+            "calls": int(status["calls"]) + 1,
+            "inputTokens": int(status["inputTokens"]) + prompt_tokens,
+        }
+        self.store.save(self.auto_budget_key, payload)
+        return self.auto_budget_status()
+
+    def project_semantic_revision(
+        self,
+        snapshots: dict[str, dict[str, Any]],
+        project_memory: dict[str, Any],
+    ) -> str:
+        """Hash only state that should justify a fresh PM interpretation.
+
+        Volatile timestamps are intentionally excluded so startup/fallback
+        refreshes do not spend Vertex tokens when the actionable GitHub state
+        is unchanged.
+        """
+
+        compact: dict[str, Any] = {}
+        for repo, snapshot in sorted(snapshots.items()):
+            repo_state = self._compact_snapshot(snapshot)
+            # Fallback polling is a recovery path, not a second event stream.
+            # Ignore raw default-branch/commit churn and bot review prose so a
+            # missed push or automated comment cannot manufacture a PM call.
+            # Actionable PR topology, human reviews and CI/check state remain
+            # in the fingerprint and will still recover missed webhooks.
+            repo_state.pop("headSha", None)
+            repo_state.pop("recentCommits", None)
+            for pull in repo_state.get("openPullRequests", []):
+                pull.pop("updatedAt", None)
+                pull.pop("botReviews", None)
+            for pull in repo_state.get("recentPullHistory", []):
+                pull.pop("updatedAt", None)
+            compact[repo] = repo_state
+        raw = json.dumps(
+            {
+                "memoryRevision": project_memory.get("revision"),
+                "repositories": compact,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def project_model_for(self, trigger: dict[str, Any]) -> tuple[str, str | None]:
+        event = str(trigger.get("event") or "")
+        context = trigger.get("eventContext") if isinstance(trigger.get("eventContext"), dict) else {}
+        review_state = str((context or {}).get("reviewState") or "").lower()
+        if event in {"pull_request_review", "issue_comment", "pull_request_review_comment"}:
+            return self.reasoning_model, "MEDIUM"
+        if review_state in {"approved", "changes_requested"}:
+            return self.reasoning_model, "MEDIUM"
+        return self.simple_model, None
 
     def _compact_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         pulls = []
@@ -207,12 +342,17 @@ Include all four team members and all explicitly defined execution Steps when pr
 Important anti-patterns to retain when supported by docs include unnecessary framework expansion, documentation becoming a delivery gate, ownership boundary violations, and adding features not needed by the E2E MVP.
 Write concise Korean values while preserving technical identifiers.
 """.strip()
-        result, usage = await self._generate_json(system, source, max_output_tokens=9000)
+        result, usage = await self._generate_json(
+            system,
+            source,
+            max_output_tokens=5000,
+            model=self.simple_model,
+        )
         payload = {
             **result,
             "revision": revision,
             "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "model": self.model,
+            "model": self.simple_model,
             "sourceDocuments": list(documents.keys()),
             "usage": usage,
         }
@@ -227,6 +367,7 @@ Write concise Korean values while preserving technical identifiers.
         changed_pull_detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         previous = self.project_state() or {}
+        semantic_revision = self.project_semantic_revision(snapshots, project_memory)
         unresolved_human_changes: dict[tuple[str, int], dict[str, Any]] = {}
         for repo, snapshot in snapshots.items():
             for pull in snapshot.get("pulls", []):
@@ -307,7 +448,14 @@ Return JSON only:
 
 Use Korean for user-facing text. Include exactly the four project members from projectCharter.roles in teamActions. Only use real open PRs in prPriorities/relatedWork. It is acceptable for a team member's NOW action to be work without a PR if that is the correct next integration task.
 """.strip()
-        result, usage = await self._generate_json(system, prompt, max_output_tokens=8000)
+        selected_model, thinking_level = self.project_model_for(trigger)
+        result, usage = await self._generate_json(
+            system,
+            prompt,
+            max_output_tokens=6000 if selected_model == self.reasoning_model else 4000,
+            model=selected_model,
+            thinking_level=thinking_level,
+        )
 
         valid_open = {
             (repo, int(pull["number"]))
@@ -411,12 +559,13 @@ Use Korean for user-facing text. Include exactly the four project members from p
         payload = {
             **result,
             "status": "ready",
-            "model": self.model,
+            "model": selected_model,
             "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "trigger": trigger,
             "analysisSequence": int(previous.get("analysisSequence") or 0) + 1,
             "recentTriggers": recent_triggers,
             "projectMemoryRevision": project_memory.get("revision"),
+            "semanticRevision": semantic_revision,
             "usage": usage,
         }
         self.store.save(self.project_state_key, payload)
@@ -447,11 +596,17 @@ Respect the four owners and their documented responsibility boundaries.
 If the user asks "다음에 뭐할까?" or equivalent, give the single highest-value next action first, then the parallel actions for the other team members if useful.
 Return JSON only: {"answer":"Korean markdown text","suggestedQuestions":["...","...","..."]}
 """.strip()
-        result, usage = await self._generate_json(system, prompt, max_output_tokens=3500)
+        result, usage = await self._generate_json(
+            system,
+            prompt,
+            max_output_tokens=3500,
+            model=self.reasoning_model,
+            thinking_level="MEDIUM",
+        )
         return {
             "answer": str(result.get("answer") or ""),
             "suggestedQuestions": [str(item) for item in result.get("suggestedQuestions", [])[:4]],
-            "model": self.model,
+            "model": self.reasoning_model,
             "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "usage": usage,
         }
@@ -532,7 +687,12 @@ Return JSON only with this exact high-level shape:
 Use only open PR numbers in priorities/watch. Rank every open PR when feasible. score is 0-100 and confidence 0-1.
 Write user-facing text in Korean, but keep code identifiers and PR numbers unchanged.
 """.strip()
-            result, usage = await self._generate_json(system, prompt, max_output_tokens=5000)
+            result, usage = await self._generate_json(
+                system,
+                prompt,
+                max_output_tokens=4000,
+                model=self.simple_model,
+            )
             priorities = []
             seen: set[int] = set()
             for item in result.get("priorities", []):
@@ -552,7 +712,7 @@ Write user-facing text in Korean, but keep code identifiers and PR numbers uncha
             payload = {
                 **result,
                 "repository": repo,
-                "model": self.model,
+                "model": self.simple_model,
                 "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "trigger": trigger,
                 "analysisSequence": int(previous.get("analysisSequence") or 0) + 1,
@@ -607,14 +767,20 @@ Return JSON only:
 {"summary":"...","riskLevel":"LOW|MEDIUM|HIGH|CRITICAL","whyItMatters":"...","affectedAreas":["..."],"reviewFocus":["..."],"relatedPulls":[123],"recommendedNextStep":"...","confidence":0.0}
 Write user-facing text in Korean.
 """.strip()
-        result, usage = await self._generate_json(system, prompt, max_output_tokens=3000)
+        result, usage = await self._generate_json(
+            system,
+            prompt,
+            max_output_tokens=3000,
+            model=self.reasoning_model,
+            thinking_level="MEDIUM",
+        )
         open_numbers = {int(p["number"]) for p in snapshot.get("pulls", []) if p.get("lifecycle") == "open" and p.get("number")}
         result["relatedPulls"] = [n for n in result.get("relatedPulls", []) if isinstance(n, int) and n in open_numbers]
         payload = {
             **result,
             "repository": repo,
             "sha": commit.get("sha"),
-            "model": self.model,
+            "model": self.reasoning_model,
             "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "usage": usage,
             "status": "ready",

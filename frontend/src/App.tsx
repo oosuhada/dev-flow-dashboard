@@ -1075,14 +1075,27 @@ export function App() {
     const params = new URLSearchParams({ repo });
     const source = new EventSource(`/dev_dashboard/api/events?${params}`);
     let timer: ReturnType<typeof setTimeout> | null = null;
-    source.onopen = () => setLiveConnected(true);
-    source.onerror = () => setLiveConnected(false);
+    let fallback: ReturnType<typeof setInterval> | null = null;
+    const stopFallback = () => {
+      if (fallback) window.clearInterval(fallback);
+      fallback = null;
+    };
+    const startFallback = () => {
+      if (!fallback) fallback = window.setInterval(() => void refresh(repo), 300_000);
+    };
+    source.onopen = () => { setLiveConnected(true); stopFallback(); };
+    source.onerror = () => { setLiveConnected(false); startFallback(); };
     source.addEventListener("github", (raw) => {
       setAILoading(true);
       if (timer) clearTimeout(timer);
+      let eventNumber: number | null = null;
+      try {
+        const event = JSON.parse((raw as MessageEvent<string>).data) as { number?: number | null };
+        eventNumber = typeof event.number === "number" ? event.number : null;
+      } catch { /* refresh the cached snapshot even for an unknown event shape */ }
       timer = setTimeout(() => {
         void refresh(repo);
-        if (selectedPull) {
+        if (selectedPull && eventNumber === selectedPull) {
           void loadPull(repo, selectedPull).then(setPullDetail).catch(() => undefined);
         }
       }, 350);
@@ -1102,11 +1115,10 @@ export function App() {
       }
     });
     source.addEventListener("activity", () => { void refreshActivity(); });
-    const fallback = window.setInterval(() => void refresh(repo), 60_000);
     return () => {
       source.close();
       if (timer) clearTimeout(timer);
-      window.clearInterval(fallback);
+      stopFallback();
       setLiveConnected(false);
     };
   }, [repo, selectedPull, selectedCommit]);

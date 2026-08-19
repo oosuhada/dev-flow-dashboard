@@ -16,7 +16,7 @@ PR 수가 늘어나면 GitHub의 개별 PR 화면만으로는 다음 질문에 �
 - 어떤 작업은 계속 진행하고, 어떤 작업은 폐기해야 하는가?
 - 팀이 문서 정리나 확장 작업에 머물지 않고 실제 E2E 완료 방향으로 가고 있는가?
 
-Dev Flow Dashboard는 **Git Graph 스타일의 deterministic 개발 흐름**을 source of truth로 두고, 그 위에 **Vertex AI Gemini 3.7 Flash 기반 AI Project Manager**를 결합합니다. AI는 GitHub 사실을 바꾸지 않고, 현재 팀이 무엇을 해야 하는지 해석하는 coordination layer로만 동작합니다.
+Dev Flow Dashboard는 **Git Graph 스타일의 deterministic 개발 흐름**을 source of truth로 두고, 그 위에 **Vertex AI tiered AI Project Manager**를 결합합니다. routine 판단은 Gemini 3.5 Flash-Lite, 기술 리뷰·대화처럼 reasoning이 필요한 작업은 Gemini 3.7 Flash를 사용합니다. AI는 GitHub 사실을 바꾸지 않고, 현재 팀이 무엇을 해야 하는지 해석하는 coordination layer로만 동작합니다.
 
 ## Screenshots
 
@@ -73,7 +73,7 @@ Density level이 올라갈 때 commit row height와 SVG graph 좌표도 함께 �
 
 AI PM은 프로젝트의 canonical docs와 현재 GitHub 상태를 함께 읽습니다.
 
-- **Gemini 3.7 Flash on Vertex AI**
+- **Tiered Vertex AI**: routine PM refresh는 `gemini-3.5-flash-lite`, 사람 기술 리뷰/코멘트와 대화·commit reasoning은 `gemini-3.7-flash`
 - canonical project docs에서 goal, role ownership, execution steps, out-of-scope, anti-overengineering rule을 추출한 Project Charter Memory
 - 직전 PM context와 최근 webhook trigger를 다음 판단에 전달하는 rolling context
 - 네 명의 팀원별 현재 `NOW` action
@@ -119,11 +119,17 @@ GitHub webhook과 AI PM 판단을 SQLite Activity store에 기록하고 SSE로 �
 
 브라우저는 GitHub API를 직접 호출하지 않습니다. FastAPI backend가 GitHub aggregator 역할을 하며 자격 증명은 서버에만 존재합니다.
 
-- GitHub webhook → server-side snapshot refresh
+- GitHub webhook payload → local snapshot patch; PR open/synchronize만 해당 PR 4개 endpoint targeted refresh
 - webhook/AI/activity event → SSE live update
-- noisy CI event는 짧게 coalesce해 stale AI queue 방지
+- SSE 연결 중 browser polling 없음; 연결이 끊긴 동안에만 5분 fallback polling
+- webhook/SSE 갱신과 AI 재분석은 분리: bot/social noise는 deterministic UI만 갱신하고 Vertex를 호출하지 않음
+- `check_run`/`check_suite`/`workflow_run`, PR synchronize, fallback 변화는 3~5분 quiet period로 coalesce
+- startup/fallback에서 compact semantic snapshot hash가 이전 판단과 같으면 Vertex 호출 생략
+- 자동 PM은 기본 KST 일일 30회 또는 input 1,250,000 tokens에서 soft-stop하며 수동 refresh/chat은 계속 사용 가능
+- 10분 fallback watcher는 ETag/`If-None-Match` conditional request 사용
 - 마지막 성공 GitHub snapshot을 `.state/snapshots/`에 저장
 - GitHub rate limit 또는 일시 장애 시 stale snapshot으로 workbench 유지
+- 403/429 rate limit 뒤에는 `Retry-After`/`X-RateLimit-Reset`까지 서버 전체 REST circuit을 차단
 - AI PM judgement와 Activity는 SQLite에 보존
 
 ## Density, theme, and resizing
@@ -156,7 +162,9 @@ GitHub repositories
                       ├─ stale snapshot fallback
                       ├─ SQLite activity + PM history
                       ├─ Project Charter Memory
-                      └─ Vertex AI Gemini 3.7 Flash
+                      └─ Vertex AI tier router
+                           ├─ Gemini 3.5 Flash-Lite (routine)
+                           └─ Gemini 3.7 Flash (reasoning/review)
                              │
                              ├─ SSE live events
                              └─ /api/*
@@ -178,6 +186,20 @@ The deterministic Git/GitHub layer is authoritative for topology, lifecycle, rev
 - launch script는 macOS의 낮은 기본 file-descriptor limit 때문에 SSE/webhook 연결이 고갈되지 않도록 soft limit를 올린 뒤 Uvicorn을 실행
 
 서비스는 loopback에만 bind되고 public ingress는 tunnel이 담당합니다.
+
+### GitHub App authentication
+
+개인 PAT quota와 대시보드 quota를 분리하려면 read-only GitHub App을 두 저장소에 설치하고 다음 값을 설정합니다. App 설정이 완전하면 `GITHUB_TOKEN`보다 installation token을 우선 사용하며 만료 전에 자동 갱신합니다.
+
+```bash
+GITHUB_APP_ID=123456
+GITHUB_APP_INSTALLATION_ID=12345678
+GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/dev-flow-dashboard.pem
+```
+
+필요한 repository permission은 Contents, Metadata, Pull requests, Checks의 read-only입니다. Activity에 issue/PR comments를 표시하려면 Issues도 read-only로 허용합니다. Webhook URL은 `/dev_dashboard/api/github/webhook`이며 기존 `GITHUB_WEBHOOK_SECRET` 검증을 그대로 사용합니다. 파일 mount가 어려운 환경은 PEM을 base64로 인코딩한 `GITHUB_APP_PRIVATE_KEY_BASE64`를 사용할 수 있습니다. 키와 installation token은 저장소에 커밋하지 않습니다.
+
+전환 확인은 `/dev_dashboard/api/health`의 `githubAuthentication: "github-app"`과 `githubRestCircuit.paused: false`로 합니다.
 
 ## Local development
 
@@ -239,4 +261,3 @@ The commit graph rendering code under `frontend/src/gitgraph/` preserves its MIT
 - **asispts/neo-git-graph** fork lineage
 
 That MIT notice applies to the attributed Git Graph lineage described in that file. This repository currently does not add a separate top-level license grant for the rest of the project source.
-
