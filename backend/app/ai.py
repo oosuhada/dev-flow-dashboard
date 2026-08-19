@@ -56,6 +56,10 @@ class VertexAIAdvisor:
         # Compatibility alias used by existing API payloads/tests.
         self.model = self.reasoning_model
         self.api_key = os.getenv("DEV_FLOW_AI_API_KEY", "")
+        self.free_api_key = os.getenv("DEV_FLOW_AI_FREE_API_KEY", "")
+        self.free_daily_call_limit = self._int_env(
+            "DEV_FLOW_AI_FREE_DAILY_CALL_LIMIT", 120, minimum=1
+        )
         configured_trigger_mode = os.getenv("DEV_FLOW_AI_TRIGGER_MODE", "meaningful-events")
         # The old production value described the pre-guardrail implementation.
         # Keep health output truthful even before the server environment is
@@ -86,7 +90,11 @@ class VertexAIAdvisor:
 
     @property
     def available(self) -> bool:
-        return self.enabled and bool(self.api_key)
+        return self.enabled and bool(self.api_key or self.free_api_key)
+
+    @property
+    def free_available(self) -> bool:
+        return self.enabled and bool(self.free_api_key)
 
     def state(self, repo: str) -> dict[str, Any] | None:
         return self.store.load(repo)
@@ -104,6 +112,39 @@ class VertexAIAdvisor:
             f"/publishers/google/models/{selected}:generateContent?key={self.api_key}"
         )
 
+    def _free_url(self, model: str) -> str:
+        return (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            f"?key={self.free_api_key}"
+        )
+
+    async def _post_generate(
+        self,
+        url: str,
+        body: dict[str, Any],
+        *,
+        provider: str,
+        model: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(url, json=body)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"{provider} {response.status_code}: {response.text[:300]}"
+            )
+        raw = response.json()
+        parts = (((raw.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+        text = "".join(str(part.get("text") or "") for part in parts)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{provider} returned non-JSON output: {text[:220]}") from exc
+        usage = dict(raw.get("usageMetadata") or {})
+        usage["model"] = model
+        usage["provider"] = provider
+        usage["billingClass"] = "free" if provider == "gemini-developer-free" else "paid"
+        return parsed, usage
+
     async def _generate_json(
         self,
         system: str,
@@ -112,6 +153,7 @@ class VertexAIAdvisor:
         *,
         model: str | None = None,
         thinking_level: str | None = None,
+        allow_paid_fallback: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.available:
             raise RuntimeError("AI advisor is not configured")
@@ -128,20 +170,25 @@ class VertexAIAdvisor:
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": generation_config,
         }
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(self._url(selected_model), json=body)
-        if response.status_code >= 400:
-            raise RuntimeError(f"Vertex AI {response.status_code}: {response.text[:300]}")
-        raw = response.json()
-        parts = (((raw.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-        text = "".join(str(part.get("text") or "") for part in parts)
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Vertex AI returned non-JSON output: {text[:220]}") from exc
-        usage = dict(raw.get("usageMetadata") or {})
-        usage["model"] = selected_model
-        return parsed, usage
+        if selected_model == self.simple_model and self.free_available:
+            try:
+                return await self._post_generate(
+                    self._free_url(selected_model),
+                    body,
+                    provider="gemini-developer-free",
+                    model=selected_model,
+                )
+            except (RuntimeError, httpx.HTTPError):
+                if not allow_paid_fallback:
+                    raise
+        if not self.api_key:
+            raise RuntimeError("Vertex AI fallback is not configured")
+        return await self._post_generate(
+            self._url(selected_model),
+            body,
+            provider="vertex-ai",
+            model=selected_model,
+        )
 
     def _budget_day(self) -> str:
         try:
@@ -154,33 +201,63 @@ class VertexAIAdvisor:
         day = self._budget_day()
         stored = self.store.load(self.auto_budget_key) or {}
         if stored.get("day") != day:
-            stored = {"day": day, "calls": 0, "inputTokens": 0}
-        calls = int(stored.get("calls") or 0)
-        input_tokens = int(stored.get("inputTokens") or 0)
-        allowed = (
-            calls < self.auto_daily_call_limit
-            and input_tokens < self.auto_daily_input_token_limit
+            stored = {
+                "day": day,
+                "paidCalls": 0,
+                "paidInputTokens": 0,
+                "freeCalls": 0,
+                "freeInputTokens": 0,
+            }
+        # Migrate the pre-free-tier state conservatively: every legacy call was
+        # a billable Vertex call.
+        paid_calls = int(stored.get("paidCalls", stored.get("calls", 0)) or 0)
+        paid_input_tokens = int(
+            stored.get("paidInputTokens", stored.get("inputTokens", 0)) or 0
         )
+        free_calls = int(stored.get("freeCalls") or 0)
+        free_input_tokens = int(stored.get("freeInputTokens") or 0)
+        paid_allowed = (
+            paid_calls < self.auto_daily_call_limit
+            and paid_input_tokens < self.auto_daily_input_token_limit
+        )
+        free_allowed = self.free_available and free_calls < self.free_daily_call_limit
         return {
             "day": day,
             "timezone": self.budget_timezone,
-            "calls": calls,
+            # Compatibility totals retained for the existing UI.
+            "calls": paid_calls + free_calls,
             "callLimit": self.auto_daily_call_limit,
-            "inputTokens": input_tokens,
+            "inputTokens": paid_input_tokens + free_input_tokens,
             "inputTokenLimit": self.auto_daily_input_token_limit,
-            "automaticAllowed": allowed,
+            "paidCalls": paid_calls,
+            "paidInputTokens": paid_input_tokens,
+            "paidAllowed": paid_allowed,
+            "freeCalls": free_calls,
+            "freeInputTokens": free_input_tokens,
+            "freeCallLimit": self.free_daily_call_limit,
+            "freeAllowed": free_allowed,
+            "automaticAllowed": paid_allowed or free_allowed,
         }
 
-    def auto_pm_allowed(self) -> bool:
-        return bool(self.auto_budget_status()["automaticAllowed"])
+    def auto_pm_allowed(self, model: str | None = None) -> bool:
+        status = self.auto_budget_status()
+        if model == self.simple_model and self.free_available:
+            return bool(status["freeAllowed"] or status["paidAllowed"])
+        return bool(status["paidAllowed"])
+
+    def paid_auto_allowed(self) -> bool:
+        return bool(self.auto_budget_status()["paidAllowed"])
 
     def record_auto_pm_usage(self, usage: dict[str, Any] | None) -> dict[str, Any]:
         status = self.auto_budget_status()
         prompt_tokens = int((usage or {}).get("promptTokenCount") or 0)
+        is_free = (usage or {}).get("billingClass") == "free"
         payload = {
             "day": status["day"],
-            "calls": int(status["calls"]) + 1,
-            "inputTokens": int(status["inputTokens"]) + prompt_tokens,
+            "paidCalls": int(status["paidCalls"]) + (0 if is_free else 1),
+            "paidInputTokens": int(status["paidInputTokens"]) + (0 if is_free else prompt_tokens),
+            "freeCalls": int(status["freeCalls"]) + (1 if is_free else 0),
+            "freeInputTokens": int(status["freeInputTokens"]) + (prompt_tokens if is_free else 0),
         }
         self.store.save(self.auto_budget_key, payload)
         return self.auto_budget_status()
@@ -228,7 +305,7 @@ class VertexAIAdvisor:
         event = str(trigger.get("event") or "")
         context = trigger.get("eventContext") if isinstance(trigger.get("eventContext"), dict) else {}
         review_state = str((context or {}).get("reviewState") or "").lower()
-        if event in {"pull_request_review", "issue_comment", "pull_request_review_comment"}:
+        if event == "pull_request_review":
             return self.reasoning_model, "MEDIUM"
         if review_state in {"approved", "changes_requested"}:
             return self.reasoning_model, "MEDIUM"
@@ -365,6 +442,8 @@ Write concise Korean values while preserving technical identifiers.
         trigger: dict[str, Any],
         project_memory: dict[str, Any],
         changed_pull_detail: dict[str, Any] | None = None,
+        *,
+        allow_paid_fallback: bool = True,
     ) -> dict[str, Any]:
         previous = self.project_state() or {}
         semantic_revision = self.project_semantic_revision(snapshots, project_memory)
@@ -455,6 +534,7 @@ Use Korean for user-facing text. Include exactly the four project members from p
             max_output_tokens=6000 if selected_model == self.reasoning_model else 4000,
             model=selected_model,
             thinking_level=thinking_level,
+            allow_paid_fallback=allow_paid_fallback,
         )
 
         valid_open = {
