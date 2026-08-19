@@ -267,7 +267,11 @@ async def _run_ai_analysis(repo: str, event_name: str, action: str | None, numbe
         event_hub.publish(DashboardEvent(repo=repo, event="ai_analysis", action="failed", number=number))
 
 
-async def _load_project_memory(force: bool = False) -> dict[str, object]:
+async def _load_project_memory(
+    force: bool = False,
+    *,
+    allow_paid_fallback: bool = True,
+) -> dict[str, object]:
     current = ai_advisor.project_memory()
     if current is not None and not force:
         return current
@@ -298,7 +302,10 @@ async def _load_project_memory(force: bool = False) -> dict[str, object]:
         if current is not None:
             return current
         raise RuntimeError("No canonical project context documents could be loaded")
-    return await ai_advisor.ensure_project_memory(documents)
+    return await ai_advisor.ensure_project_memory(
+        documents,
+        allow_paid_fallback=allow_paid_fallback,
+    )
 
 
 async def _run_project_pm(
@@ -326,7 +333,10 @@ async def _run_project_pm(
                 return
             if event_name not in {"startup", "repository_changed"}:
                 await asyncio.sleep(0.6)
-            memory = await _load_project_memory(force=refresh_docs)
+            memory = await _load_project_memory(
+                force=refresh_docs,
+                allow_paid_fallback=ai_advisor.paid_auto_allowed(),
+            )
             snapshots: dict[str, dict[str, object]] = {}
             for repo in configured_repositories():
                 try:

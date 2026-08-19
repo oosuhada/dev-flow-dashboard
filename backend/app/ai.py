@@ -379,7 +379,12 @@ class VertexAIAdvisor:
             ],
         }
 
-    async def ensure_project_memory(self, documents: dict[str, str]) -> dict[str, Any]:
+    async def ensure_project_memory(
+        self,
+        documents: dict[str, str],
+        *,
+        allow_paid_fallback: bool = True,
+    ) -> dict[str, Any]:
         """Build a persistent project charter from canonical docs only when they change."""
         digest = hashlib.sha256()
         for path in sorted(documents):
@@ -427,6 +432,7 @@ Write concise Korean values while preserving technical identifiers.
             source,
             max_output_tokens=5000,
             model=self.simple_model,
+            allow_paid_fallback=allow_paid_fallback,
         )
         payload = {
             **result,
