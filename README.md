@@ -287,6 +287,16 @@ The commit graph rendering code under `frontend/src/gitgraph/` preserves its MIT
 
 That MIT notice applies to the attributed Git Graph lineage described in that file. This repository currently does not add a separate top-level license grant for the rest of the project source.
 
-## Topics
+## Architecture & Topics / 아키텍처 및 주제
 
-[`circuit-breaker`](https://github.com/topics/circuit-breaker) · [`developer-tools`](https://github.com/topics/developer-tools) · [`docker`](https://github.com/topics/docker) · [`fastapi`](https://github.com/topics/fastapi) · [`github-api`](https://github.com/topics/github-api) · [`react`](https://github.com/topics/react) · [`sse`](https://github.com/topics/sse) · [`typescript`](https://github.com/topics/typescript) · [`pull-request`](https://github.com/topics/pull-request) · [`dependency-graph`](https://github.com/topics/dependency-graph) · [`github`](https://github.com/topics/github) · [`dashboard`](https://github.com/topics/dashboard) · [`code-review`](https://github.com/topics/code-review) · [`devops`](https://github.com/topics/devops) · [`real-time`](https://github.com/topics/real-time) · [`team-workflow`](https://github.com/topics/team-workflow)
+**Architecture / 아키텍처**<br>
+[`dependency-graph`](https://github.com/topics/dependency-graph) · [`event-driven-architecture`](https://github.com/topics/event-driven-architecture) · [`server-sent-events`](https://github.com/topics/server-sent-events) · [`circuit-breaker`](https://github.com/topics/circuit-breaker) · [`fallback-pattern`](https://github.com/topics/fallback-pattern) · [`stale-cache`](https://github.com/topics/stale-cache) · [`event-coalescing`](https://github.com/topics/event-coalescing) · [`snapshot-pattern`](https://github.com/topics/snapshot-pattern) · [`advisory-system`](https://github.com/topics/advisory-system) · [`read-only-integration`](https://github.com/topics/read-only-integration) · [`self-hosted-runner`](https://github.com/topics/self-hosted-runner) · [`reverse-proxy`](https://github.com/topics/reverse-proxy)
+
+**Core technologies / 핵심 기술**<br>
+[`github-app`](https://github.com/topics/github-app) · [`cloudflare-tunnel`](https://github.com/topics/cloudflare-tunnel)
+
+**Project context / 프로젝트 맥락**<br>
+[`code-review`](https://github.com/topics/code-review) · [`dashboard`](https://github.com/topics/dashboard) · [`developer-tools`](https://github.com/topics/developer-tools) · [`devops`](https://github.com/topics/devops) · [`github`](https://github.com/topics/github) · [`pull-request`](https://github.com/topics/pull-request) · [`real-time`](https://github.com/topics/real-time) · [`sse`](https://github.com/topics/sse) · [`team-workflow`](https://github.com/topics/team-workflow)
+
+**Implementation stack / 구현 스택**<br>
+[`docker`](https://github.com/topics/docker) · [`fastapi`](https://github.com/topics/fastapi) · [`github-api`](https://github.com/topics/github-api) · [`react`](https://github.com/topics/react) · [`typescript`](https://github.com/topics/typescript)
