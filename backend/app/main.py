@@ -400,11 +400,15 @@ def _schedule_project_pm(
     if event_name in {"check_run", "check_suite", "workflow_run"}:
         if number is None:
             return
-        debounce_kind = "ci"
+        # PR synchronize/edit and its follow-on CI belong to one semantic
+        # state transition. Sharing a key makes each later CI event extend the
+        # same quiet window instead of paying once for the push and again for
+        # the final checks.
+        debounce_kind = "pr-state"
         normalized_event = "ci_status_changed"
         normalized_action = f"{event_name}:{action or 'updated'}"
     elif event_name == "pull_request" and action in {"edited", "synchronize"}:
-        debounce_kind = "pull-request"
+        debounce_kind = "pr-state"
     elif event_name == "repository_changed":
         debounce_kind = "fallback"
 
