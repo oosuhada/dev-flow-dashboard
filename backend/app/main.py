@@ -42,9 +42,9 @@ PROJECT_CONTEXT_DOCS = [
 
 def _watch_interval_seconds() -> int:
     try:
-        return max(30, min(600, int(os.getenv("GITHUB_WATCH_INTERVAL_SECONDS", "120"))))
+        return max(300, min(1800, int(os.getenv("GITHUB_WATCH_INTERVAL_SECONDS", "600"))))
     except ValueError:
-        return 120
+        return 600
 
 
 def _ai_debounce_seconds() -> int:
@@ -227,7 +227,10 @@ async def _watch_github() -> None:
                 previous = fingerprints.get(repo)
                 fingerprints[repo] = current
                 if previous is not None and current != previous:
-                    aggregator.cache.clear(repo)
+                    # This is recovery for a missed webhook. Conditional GETs
+                    # make unchanged resources return 304, while the resulting
+                    # snapshot repairs any local state that drifted.
+                    await aggregator.snapshot(repo, force=True)
                     event_hub.publish(DashboardEvent(repo=repo, event="repository_changed"))
                     _schedule_project_pm(repo, "repository_changed", "fallback-watch", None)
             except (RuntimeError, ValueError):
@@ -246,13 +249,11 @@ async def _run_ai_analysis(repo: str, event_name: str, action: str | None, numbe
         # still feeling immediate in the dashboard.
         if event_name not in {"startup", "repository_changed"}:
             await asyncio.sleep(0.8)
-        snapshot_data = await aggregator.snapshot(repo, force=True)
-        pull_detail_data = None
-        if number is not None:
-            try:
-                pull_detail_data = await aggregator.pull_detail(repo, number)
-            except (RuntimeError, ValueError):
-                pull_detail_data = None
+        snapshot_data = await aggregator.snapshot(repo)
+        pull_detail_data = next(
+            (pull for pull in snapshot_data.get("pulls", []) if pull.get("number") == number),
+            None,
+        )
         await ai_advisor.analyze_repository(
             repo,
             snapshot_data,
@@ -325,7 +326,7 @@ async def _run_project_pm(
             snapshots: dict[str, dict[str, object]] = {}
             for repo in configured_repositories():
                 try:
-                    snapshots[repo] = await aggregator.snapshot(repo, force=repo == trigger_repo)
+                    snapshots[repo] = await aggregator.snapshot(repo)
                 except RuntimeError:
                     stale = aggregator.stale_snapshot(repo)
                     if stale is None:
@@ -341,12 +342,10 @@ async def _run_project_pm(
                         DashboardEvent(repo=repo, event="ai_project", action="unchanged-skip", number=number)
                     )
                 return
-            pull_detail_data = None
-            if number is not None:
-                try:
-                    pull_detail_data = await aggregator.pull_detail(trigger_repo, number)
-                except (RuntimeError, ValueError):
-                    pull_detail_data = None
+            pull_detail_data = next(
+                (pull for pull in snapshots.get(trigger_repo, {}).get("pulls", []) if pull.get("number") == number),
+                None,
+            )
             trigger = {"repository": trigger_repo, "event": event_name, "action": action, "number": number}
             if event_context:
                 trigger["eventContext"] = event_context
@@ -482,6 +481,25 @@ def _schedule_ai(repo: str, event_name: str, action: str | None, number: int | N
     task.add_done_callback(_background_tasks.discard)
 
 
+def _schedule_targeted_pull_refresh(repo: str, number: int) -> None:
+    async def refresh_after_webhook_settles() -> None:
+        try:
+            await asyncio.sleep(0.8)
+            refreshed = await aggregator.refresh_pull(repo, number)
+            if refreshed is not None:
+                event_hub.publish(
+                    DashboardEvent(repo=repo, event="targeted_pull_refresh", action="completed", number=number)
+                )
+        except (RuntimeError, ValueError):
+            # Webhook-patched state remains available. The conditional watcher
+            # repairs any missed detail after backoff or a transient failure.
+            return
+
+    task = asyncio.create_task(refresh_after_webhook_settles())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @app.on_event("startup")
 async def start_github_watcher() -> None:
     global _watch_task
@@ -520,7 +538,8 @@ async def health() -> dict[str, object]:
     return {
         "status": "ok",
         "repositories": configured_repositories(),
-        "githubAuthentication": "authenticated" if aggregator.authenticated else "public",
+        "githubAuthentication": aggregator.authentication_mode,
+        "githubRestCircuit": aggregator.rate_limit_status(),
         "cacheTtlSeconds": aggregator.cache.ttl_seconds,
         "liveUpdates": "github-webhook+sse",
         "watcherFallbackSeconds": _watch_interval_seconds(),
@@ -612,7 +631,7 @@ async def github_webhook(request: Request) -> dict[str, object]:
             candidate = (pull_refs[0] if pull_refs else {}).get("number")
             number = candidate if isinstance(candidate, int) else None
 
-    aggregator.cache.clear(repo)
+    aggregator.apply_webhook(repo, event_name, payload, number)
     if event_name != "ping":
         activity_id = activity_store.add_github(repo, event_name, action, number, payload)
         # Notifications are project-wide. Broadcast to every open repository
@@ -621,6 +640,8 @@ async def github_webhook(request: Request) -> dict[str, object]:
         for subscribed_repo in configured_repositories():
             event_hub.publish(DashboardEvent(repo=subscribed_repo, event="activity", action=str(activity_id), number=number))
     event_hub.publish(DashboardEvent(repo=repo, event=event_name, action=action, number=number))
+    if event_name == "pull_request" and number is not None and action in {"opened", "reopened", "synchronize"}:
+        _schedule_targeted_pull_refresh(repo, number)
     if event_name != "ping" and _should_analyze_webhook(payload, event_name, action):
         _schedule_project_pm(repo, event_name, action, number, _webhook_pm_context(payload, event_name, action, number))
     return {"accepted": True, "repo": repo, "event": event_name, "number": number}

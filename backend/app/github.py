@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+import jwt
 
 GITHUB_API = "https://api.github.com"
 
@@ -83,14 +85,111 @@ class SnapshotCache:
         return payload if isinstance(payload, dict) else None
 
 
+class GitHubRateLimitError(RuntimeError):
+    """Raised without making a request while the shared REST circuit is open."""
+
+
+class GitHubAppAuth:
+    def __init__(self) -> None:
+        self.app_id = os.getenv("GITHUB_APP_ID", "").strip()
+        self.installation_id = os.getenv("GITHUB_APP_INSTALLATION_ID", "").strip()
+        self._token: str | None = None
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+
+    @property
+    def requested(self) -> bool:
+        return bool(self.app_id or self.installation_id or self._private_key_source())
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.app_id and self.installation_id and self._private_key_source())
+
+    def _private_key_source(self) -> str:
+        return (
+            os.getenv("GITHUB_APP_PRIVATE_KEY", "").strip()
+            or os.getenv("GITHUB_APP_PRIVATE_KEY_BASE64", "").strip()
+            or os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", "").strip()
+        )
+
+    def _private_key(self) -> str:
+        inline = os.getenv("GITHUB_APP_PRIVATE_KEY", "").strip()
+        if inline:
+            return inline.replace("\\n", "\n")
+        encoded = os.getenv("GITHUB_APP_PRIVATE_KEY_BASE64", "").strip()
+        if encoded:
+            return base64.b64decode(encoded).decode("utf-8")
+        path = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", "").strip()
+        if path:
+            return Path(path).read_text()
+        raise RuntimeError("GitHub App private key is not configured")
+
+    async def token(self) -> str:
+        now = time.time()
+        if self._token and self._expires_at > now + 300:
+            return self._token
+        async with self._lock:
+            now = time.time()
+            if self._token and self._expires_at > now + 300:
+                return self._token
+            app_jwt = jwt.encode(
+                {"iat": int(now) - 60, "exp": int(now) + 540, "iss": self.app_id},
+                self._private_key(),
+                algorithm="RS256",
+            )
+            headers = {
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {app_jwt}",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "dev-flow-dashboard",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{GITHUB_API}/app/installations/{self.installation_id}/access_tokens",
+                    headers=headers,
+                )
+            if response.status_code >= 400:
+                raise RuntimeError(f"GitHub App authentication failed ({response.status_code})")
+            payload = response.json()
+            token = str(payload.get("token") or "")
+            if not token:
+                raise RuntimeError("GitHub App authentication returned no installation token")
+            self._token = token
+            # Installation tokens normally last one hour. Parsing ISO timestamps
+            # is unnecessary here; a conservative refresh keeps credentials fresh.
+            self._expires_at = now + 3300
+            return token
+
+
 class GitHubAggregator:
     def __init__(self, token: str | None = None, cache: SnapshotCache | None = None) -> None:
         self.token = token if token is not None else os.getenv("GITHUB_TOKEN")
+        self.app_auth = GitHubAppAuth()
         self.cache = cache or SnapshotCache()
+        self._conditional: dict[str, tuple[str, Any]] = {}
+        self._rest_paused_until = 0.0
+        self._pause_reason: str | None = None
 
     @property
     def authenticated(self) -> bool:
-        return bool(self.token)
+        return self.app_auth.configured or (not self.app_auth.requested and bool(self.token))
+
+    @property
+    def authentication_mode(self) -> str:
+        if self.app_auth.configured:
+            return "github-app"
+        if self.app_auth.requested:
+            return "github-app-misconfigured"
+        return "token" if self.token else "public"
+
+    def rate_limit_status(self) -> dict[str, Any]:
+        remaining = max(0, int(self._rest_paused_until - time.time()))
+        return {
+            "paused": remaining > 0,
+            "pausedUntil": self._rest_paused_until if remaining > 0 else None,
+            "retryAfterSeconds": remaining,
+            "reason": self._pause_reason if remaining > 0 else None,
+        }
 
     def stale_snapshot(self, repo: str) -> dict[str, Any] | None:
         cached = self.cache.get_stale(repo)
@@ -101,24 +200,138 @@ class GitHubAggregator:
             "cache": {"hit": True, "ttlSeconds": self.cache.ttl_seconds, "stale": True},
         }
 
-    def _headers(self) -> dict[str, str]:
+    async def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "dev-flow-dashboard",
         }
-        if self.token:
+        if self.app_auth.configured:
+            headers["Authorization"] = f"Bearer {await self.app_auth.token()}"
+        elif self.app_auth.requested:
+            raise RuntimeError("GitHub App configuration is incomplete; refusing PAT fallback")
+        elif self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
     async def _get(self, client: httpx.AsyncClient, path: str) -> tuple[Any, int | None, int | None]:
-        response = await client.get(f"{GITHUB_API}{path}", headers=self._headers())
+        now = time.time()
+        if self._rest_paused_until > now:
+            wait = max(1, int(self._rest_paused_until - now))
+            raise GitHubRateLimitError(f"GitHub REST paused for {wait}s after rate limiting")
+        headers = await self._headers()
+        conditional = self._conditional.get(path)
+        if conditional is not None:
+            headers["If-None-Match"] = conditional[0]
+        response = await client.get(f"{GITHUB_API}{path}", headers=headers)
         remaining = int(response.headers["x-ratelimit-remaining"]) if response.headers.get("x-ratelimit-remaining", "").isdigit() else None
         limit = int(response.headers["x-ratelimit-limit"]) if response.headers.get("x-ratelimit-limit", "").isdigit() else None
+        if response.status_code == 304 and conditional is not None:
+            return copy.deepcopy(conditional[1]), remaining, limit
         if response.status_code >= 400:
+            body = response.text.lower()
+            retry_after = response.headers.get("retry-after", "")
+            reset = response.headers.get("x-ratelimit-reset", "")
+            is_limited = response.status_code == 429 or (
+                response.status_code == 403
+                and (remaining == 0 or retry_after.isdigit() or "rate limit" in body)
+            )
+            if is_limited:
+                candidates = [time.time() + 60]
+                if retry_after.isdigit():
+                    candidates.append(time.time() + int(retry_after))
+                if reset.isdigit():
+                    candidates.append(float(reset))
+                self._rest_paused_until = max(self._rest_paused_until, *candidates)
+                self._pause_reason = "primary" if remaining == 0 else "secondary"
             detail = response.text[:220]
-            raise RuntimeError(f"GitHub API {response.status_code}: {detail}")
-        return response.json(), remaining, limit
+            error_type = GitHubRateLimitError if is_limited else RuntimeError
+            raise error_type(f"GitHub API {response.status_code}: {detail}")
+        payload = response.json()
+        etag = response.headers.get("etag")
+        if etag:
+            self._conditional[path] = (etag, copy.deepcopy(payload))
+        return payload, remaining, limit
+
+    def apply_webhook(self, repo: str, event_name: str, payload: dict[str, Any], number: int | None) -> bool:
+        """Patch the last snapshot from fresh webhook evidence without REST."""
+        snapshot = self.cache.get_stale(repo)
+        if snapshot is None:
+            return False
+        updated = copy.deepcopy(snapshot)
+        pulls = updated.get("pulls") if isinstance(updated.get("pulls"), list) else []
+        pull_index = next((i for i, item in enumerate(pulls) if item.get("number") == number), None)
+        raw_pull = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else None
+
+        if raw_pull is not None:
+            current = pulls[pull_index] if pull_index is not None else None
+            patched = normalize_pull(raw_pull, [], [], [])
+            patched.pop("_commits", None)
+            if current:
+                patched["reviews"] = current.get("reviews", [])
+                patched["checks"] = current.get("checks", [])
+                patched["commitCount"] = current.get("commitCount", 0)
+            if pull_index is None:
+                pulls.insert(0, patched)
+                pull_index = 0
+            else:
+                pulls[pull_index] = patched
+
+        current = pulls[pull_index] if pull_index is not None else None
+        if current is not None and event_name == "pull_request_review":
+            review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
+            normalized = {
+                "user": (review.get("user") or {}).get("login", "unknown"),
+                "state": str(review.get("state") or "COMMENTED").upper(),
+                "body": review.get("body") or "",
+                "submittedAt": review.get("submitted_at"),
+                "isBot": (review.get("user") or {}).get("type") == "Bot",
+            }
+            reviews = list(current.get("reviews") or [])
+            reviews.append(normalized)
+            current["reviews"] = reviews
+        elif current is not None and event_name == "check_run":
+            check = payload.get("check_run") if isinstance(payload.get("check_run"), dict) else {}
+            normalized = {
+                "name": check.get("name", "check"),
+                "status": check.get("status", "queued"),
+                "conclusion": check.get("conclusion"),
+                "url": check.get("html_url") or check.get("details_url"),
+            }
+            checks = [item for item in (current.get("checks") or []) if item.get("name") != normalized["name"]]
+            current["checks"] = [normalized, *checks]
+        elif current is not None and event_name in {"issue_comment", "pull_request_review_comment"}:
+            if payload.get("action") == "created":
+                current["commentsCount"] = int(current.get("commentsCount") or 0) + 1
+        elif event_name == "push":
+            ref = str(payload.get("ref") or "")
+            branch = ref.removeprefix("refs/heads/")
+            if branch == updated.get("defaultBranch"):
+                updated["headSha"] = payload.get("after") or updated.get("headSha")
+                commits = []
+                for item in payload.get("commits") or []:
+                    author = item.get("author") or {}
+                    commits.append({
+                        "sha": item.get("id", ""),
+                        "message": str(item.get("message") or "Commit").split("\n", 1)[0],
+                        "author": author.get("name", "unknown"),
+                        "email": author.get("email", ""),
+                        "timestamp": item.get("timestamp") or "1970-01-01T00:00:00Z",
+                        "parents": [],
+                        "branch": branch,
+                        "refs": [],
+                    })
+                existing = [item for item in (updated.get("commits") or []) if item.get("sha") not in {c["sha"] for c in commits}]
+                updated["commits"] = [*reversed(commits), *existing][:100]
+
+        if raw_pull is None and current is None and event_name != "push":
+            return False
+        updated["pulls"] = pulls
+        updated["pullRelations"] = derive_pull_relations(pulls)
+        updated["fetchedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        updated["cache"] = {"hit": True, "ttlSeconds": self.cache.ttl_seconds, "source": "webhook"}
+        self.cache.set(repo, updated)
+        return True
 
     async def repository_fingerprint(self, repo: str) -> str:
         """Cheap change detector used by the live SSE watcher.
@@ -270,6 +483,56 @@ class GitHubAggregator:
         }
         self.cache.set(repo, snapshot)
         return snapshot
+
+    async def refresh_pull(self, repo: str, number: int) -> dict[str, Any] | None:
+        """Refresh one PR and patch it into the local snapshot (four REST reads)."""
+        if repo not in configured_repositories():
+            raise ValueError("Repository is not configured")
+        if number <= 0:
+            raise ValueError("Invalid pull request number")
+        base = self.cache.get_stale(repo)
+        if base is None:
+            return None
+        owner, name = repo.split("/", 1)
+        root = f"/repos/{owner}/{name}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            detail, _, _ = await self._get(client, f"{root}/pulls/{number}")
+            head_sha = str(((detail.get("head") or {}).get("sha") or ""))
+            reviews_result, checks_result, commits_result = await asyncio.gather(
+                self._get(client, f"{root}/pulls/{number}/reviews?per_page=100"),
+                self._get(client, f"{root}/commits/{head_sha}/check-runs?per_page=100"),
+                self._get(client, f"{root}/pulls/{number}/commits?per_page=100"),
+            )
+        reviews = reviews_result[0]
+        checks_payload = checks_result[0]
+        commits_raw = commits_result[0]
+        checks = checks_payload.get("check_runs", []) if isinstance(checks_payload, dict) else []
+        normalized = normalize_pull(detail, reviews, checks, commits_raw)
+        pr_commits = normalized.pop("_commits")
+
+        updated = copy.deepcopy(base)
+        pulls = [item for item in (updated.get("pulls") or []) if item.get("number") != number]
+        pulls.append(normalized)
+        pulls.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        updated["pulls"] = pulls
+        updated["pullRelations"] = derive_pull_relations(pulls)
+
+        commits = [item for item in (updated.get("commits") or []) if item.get("prNumber") != number]
+        for item in pr_commits:
+            candidate = normalize_commit(item, normalized["head"], number)
+            if not any(current.get("sha") == candidate["sha"] for current in commits):
+                candidate["refs"] = (
+                    [{"name": normalized["head"], "type": "remote"}]
+                    if candidate["sha"] == normalized["headSha"]
+                    else []
+                )
+                commits.append(candidate)
+        commits.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+        updated["commits"] = commits[:100]
+        updated["fetchedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        updated["cache"] = {"hit": False, "ttlSeconds": self.cache.ttl_seconds, "source": "targeted-pr"}
+        self.cache.set(repo, updated)
+        return updated
 
     async def pull_detail(self, repo: str, number: int) -> dict[str, Any]:
         if repo not in configured_repositories():
@@ -610,4 +873,3 @@ def normalize_commit(commit: dict[str, Any], branch: str, pr_number: int | None 
         "prNumber": pr_number,
         "refs": [],
     }
-
