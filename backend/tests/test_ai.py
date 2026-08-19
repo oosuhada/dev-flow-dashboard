@@ -194,6 +194,38 @@ async def test_project_pm_human_changes_requested_forces_author_fix_before_merge
     assert prompts[0]["unresolvedHumanChangesRequested"][0]["number"] == 23
 
 
+@pytest.mark.asyncio
+async def test_project_memory_respects_paid_fallback_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_ENABLED", "true")
+    monkeypatch.setenv("DEV_FLOW_AI_FREE_API_KEY", "free-key")
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    advisor = VertexAIAdvisor()
+    seen: dict = {}
+
+    async def fake_generate(_system: str, _prompt: str, max_output_tokens: int = 4096, **kwargs):
+        seen.update(kwargs)
+        return (
+            {
+                "projectName": "test",
+                "roles": [],
+                "steps": [],
+            },
+            {
+                "model": advisor.simple_model,
+                "provider": "gemini-developer-free",
+                "billingClass": "free",
+            },
+        )
+
+    monkeypatch.setattr(advisor, "_generate_json", fake_generate)
+    await advisor.ensure_project_memory(
+        {"README.md": "canonical project context"},
+        allow_paid_fallback=False,
+    )
+    assert seen["model"] == advisor.simple_model
+    assert seen["allow_paid_fallback"] is False
+
+
 def test_project_semantic_revision_ignores_volatile_updated_at(monkeypatch, tmp_path):
     monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
     advisor = VertexAIAdvisor()
