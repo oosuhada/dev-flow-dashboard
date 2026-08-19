@@ -113,10 +113,7 @@ class VertexAIAdvisor:
         )
 
     def _free_url(self, model: str) -> str:
-        return (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            f"?key={self.free_api_key}"
-        )
+        return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     async def _post_generate(
         self,
@@ -125,9 +122,10 @@ class VertexAIAdvisor:
         *,
         provider: str,
         model: str,
+        headers: dict[str, str] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(url, json=body)
+            response = await client.post(url, json=body, headers=headers)
         if response.status_code >= 400:
             raise RuntimeError(
                 f"{provider} {response.status_code}: {response.text[:300]}"
@@ -177,6 +175,7 @@ class VertexAIAdvisor:
                     body,
                     provider="gemini-developer-free",
                     model=selected_model,
+                    headers={"x-goog-api-key": self.free_api_key},
                 )
             except (RuntimeError, httpx.HTTPError):
                 if not allow_paid_fallback:
