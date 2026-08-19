@@ -194,6 +194,38 @@ async def test_project_pm_human_changes_requested_forces_author_fix_before_merge
     assert prompts[0]["unresolvedHumanChangesRequested"][0]["number"] == 23
 
 
+@pytest.mark.asyncio
+async def test_project_memory_respects_paid_fallback_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_ENABLED", "true")
+    monkeypatch.setenv("DEV_FLOW_AI_FREE_API_KEY", "free-key")
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    advisor = VertexAIAdvisor()
+    seen: dict = {}
+
+    async def fake_generate(_system: str, _prompt: str, max_output_tokens: int = 4096, **kwargs):
+        seen.update(kwargs)
+        return (
+            {
+                "projectName": "test",
+                "roles": [],
+                "steps": [],
+            },
+            {
+                "model": advisor.simple_model,
+                "provider": "gemini-developer-free",
+                "billingClass": "free",
+            },
+        )
+
+    monkeypatch.setattr(advisor, "_generate_json", fake_generate)
+    await advisor.ensure_project_memory(
+        {"README.md": "canonical project context"},
+        allow_paid_fallback=False,
+    )
+    assert seen["model"] == advisor.simple_model
+    assert seen["allow_paid_fallback"] is False
+
+
 def test_project_semantic_revision_ignores_volatile_updated_at(monkeypatch, tmp_path):
     monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
     advisor = VertexAIAdvisor()
@@ -237,6 +269,43 @@ def test_auto_pm_budget_enforces_daily_calls_and_input_tokens(monkeypatch, tmp_p
     assert status["automaticAllowed"] is False
 
 
+def test_free_pm_usage_does_not_consume_paid_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEV_FLOW_AI_ENABLED", "true")
+    monkeypatch.setenv("DEV_FLOW_AI_API_KEY", "paid-key")
+    monkeypatch.setenv("DEV_FLOW_AI_FREE_API_KEY", "free-key")
+    monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DEV_FLOW_AI_DAILY_CALL_LIMIT", "1")
+    monkeypatch.setenv("DEV_FLOW_AI_DAILY_INPUT_TOKEN_LIMIT", "10000")
+    monkeypatch.setenv("DEV_FLOW_AI_FREE_DAILY_CALL_LIMIT", "3")
+    advisor = VertexAIAdvisor()
+
+    status = advisor.record_auto_pm_usage(
+        {
+            "promptTokenCount": 7000,
+            "billingClass": "free",
+            "provider": "gemini-developer-free",
+        }
+    )
+    assert status["freeCalls"] == 1
+    assert status["freeInputTokens"] == 7000
+    assert status["paidCalls"] == 0
+    assert status["paidInputTokens"] == 0
+    assert status["freeAllowed"] is True
+    assert status["paidAllowed"] is True
+
+    advisor.record_auto_pm_usage(
+        {
+            "promptTokenCount": 6000,
+            "billingClass": "paid",
+            "provider": "vertex-ai",
+        }
+    )
+    status = advisor.auto_budget_status()
+    assert status["paidAllowed"] is False
+    assert advisor.auto_pm_allowed(advisor.simple_model) is True
+    assert advisor.auto_pm_allowed(advisor.reasoning_model) is False
+
+
 def test_project_model_tier_uses_reasoning_for_human_review(monkeypatch, tmp_path):
     monkeypatch.setenv("DEV_FLOW_AI_STATE_DIR", str(tmp_path))
     advisor = VertexAIAdvisor()
@@ -250,7 +319,12 @@ def test_project_model_tier_uses_reasoning_for_human_review(monkeypatch, tmp_pat
             "eventContext": {"reviewState": "changes_requested"},
         }
     )
+    comment_model, comment_thinking = advisor.project_model_for(
+        {"event": "issue_comment", "action": "created"}
+    )
     assert simple == "gemini-3.5-flash-lite"
     assert simple_thinking is None
+    assert comment_model == "gemini-3.5-flash-lite"
+    assert comment_thinking is None
     assert reasoning == "gemini-3.7-flash"
     assert reasoning_thinking == "MEDIUM"

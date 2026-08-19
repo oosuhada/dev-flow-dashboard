@@ -267,7 +267,11 @@ async def _run_ai_analysis(repo: str, event_name: str, action: str | None, numbe
         event_hub.publish(DashboardEvent(repo=repo, event="ai_analysis", action="failed", number=number))
 
 
-async def _load_project_memory(force: bool = False) -> dict[str, object]:
+async def _load_project_memory(
+    force: bool = False,
+    *,
+    allow_paid_fallback: bool = True,
+) -> dict[str, object]:
     current = ai_advisor.project_memory()
     if current is not None and not force:
         return current
@@ -298,7 +302,10 @@ async def _load_project_memory(force: bool = False) -> dict[str, object]:
         if current is not None:
             return current
         raise RuntimeError("No canonical project context documents could be loaded")
-    return await ai_advisor.ensure_project_memory(documents)
+    return await ai_advisor.ensure_project_memory(
+        documents,
+        allow_paid_fallback=allow_paid_fallback,
+    )
 
 
 async def _run_project_pm(
@@ -314,7 +321,11 @@ async def _run_project_pm(
         return
     async with _project_ai_lock:
         try:
-            if not ai_advisor.auto_pm_allowed():
+            trigger = {"repository": trigger_repo, "event": event_name, "action": action, "number": number}
+            if event_context:
+                trigger["eventContext"] = event_context
+            selected_model, _thinking_level = ai_advisor.project_model_for(trigger)
+            if not ai_advisor.auto_pm_allowed(selected_model):
                 for repo in configured_repositories():
                     event_hub.publish(
                         DashboardEvent(repo=repo, event="ai_project", action="budget-exhausted", number=number)
@@ -322,7 +333,10 @@ async def _run_project_pm(
                 return
             if event_name not in {"startup", "repository_changed"}:
                 await asyncio.sleep(0.6)
-            memory = await _load_project_memory(force=refresh_docs)
+            memory = await _load_project_memory(
+                force=refresh_docs,
+                allow_paid_fallback=ai_advisor.paid_auto_allowed(),
+            )
             snapshots: dict[str, dict[str, object]] = {}
             for repo in configured_repositories():
                 try:
@@ -346,14 +360,12 @@ async def _run_project_pm(
                 (pull for pull in snapshots.get(trigger_repo, {}).get("pulls", []) if pull.get("number") == number),
                 None,
             )
-            trigger = {"repository": trigger_repo, "event": event_name, "action": action, "number": number}
-            if event_context:
-                trigger["eventContext"] = event_context
             project_state = await ai_advisor.analyze_project(
                 snapshots,
                 trigger,
                 memory,
                 pull_detail_data,
+                allow_paid_fallback=ai_advisor.paid_auto_allowed(),
             )
             budget = ai_advisor.record_auto_pm_usage(project_state.get("usage"))
             snapshot_id = activity_store.add_pm_snapshot(project_state)
@@ -548,6 +560,12 @@ async def health() -> dict[str, object]:
             "model": ai_advisor.model,
             "reasoningModel": ai_advisor.reasoning_model,
             "simpleModel": ai_advisor.simple_model,
+            "simpleProvider": (
+                "gemini-developer-free"
+                if ai_advisor.free_available
+                else "vertex-ai"
+            ),
+            "freeTierEnabled": ai_advisor.free_available,
             "project": ai_advisor.project if ai_advisor.available else None,
             "triggerMode": ai_advisor.trigger_mode,
             "debounceSeconds": _ai_debounce_seconds(),
