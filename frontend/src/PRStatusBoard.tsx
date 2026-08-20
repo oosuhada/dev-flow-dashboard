@@ -1,32 +1,47 @@
 import {
   CheckCircle2,
+  ChevronRight,
   CircleDot,
   Clock3,
   ExternalLink,
   GitMerge,
   PauseCircle,
+  RefreshCw,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
 import board from "./pr-status-board.json";
 
-type StatusKind = "merged" | "ready" | "review" | "blocked" | "waiting" | "hold" | "verified";
+type StatusKind = "ready" | "progress" | "review" | "blocked" | "waiting" | "hold" | "verified";
+type LaneKind = "cicd" | "project" | "diagnosis" | "final" | "later";
 
 type BoardItem = {
   number: number;
   area: string;
   status: StatusKind;
+  sequence: string;
+  lane: LaneKind;
   decision: string;
   summary: string;
   action: string;
 };
 
+type MergePlanStep = {
+  order: number;
+  tone: LaneKind;
+  label: string;
+  prs: number[];
+  parallel?: number[];
+  note: string;
+};
+
 const items = board.items as BoardItem[];
+const mergePlan = board.mergePlan as MergePlanStep[];
 
 const statusMeta: Record<StatusKind, { label: string; icon: typeof CheckCircle2 }> = {
-  merged: { label: "Merged", icon: GitMerge },
   ready: { label: "Ready", icon: CheckCircle2 },
-  review: { label: "Re-review", icon: CircleDot },
+  progress: { label: "In progress", icon: RefreshCw },
+  review: { label: "Rebase / review", icon: CircleDot },
   blocked: { label: "Blocked", icon: XCircle },
   waiting: { label: "Waiting", icon: Clock3 },
   hold: { label: "Hold", icon: PauseCircle },
@@ -49,12 +64,13 @@ export function PRStatusBoard({ query }: { query: string }) {
   const needle = query.trim().toLowerCase();
   const visible = items.filter((item) => {
     if (!needle) return true;
-    return `#${item.number} ${item.area} ${item.decision} ${item.summary} ${item.action}`.toLowerCase().includes(needle);
+    return `#${item.number} ${item.area} ${item.sequence} ${item.decision} ${item.summary} ${item.action}`.toLowerCase().includes(needle);
   });
   const counts = items.reduce<Record<StatusKind, number>>((acc, item) => {
     acc[item.status] += 1;
     return acc;
-  }, { merged: 0, ready: 0, review: 0, blocked: 0, waiting: 0, hold: 0, verified: 0 });
+  }, { ready: 0, progress: 0, review: 0, blocked: 0, waiting: 0, hold: 0, verified: 0 });
+  const visibleStatuses = (Object.keys(statusMeta) as StatusKind[]).filter((status) => counts[status] > 0);
   const baseUrl = `https://github.com/${board.repository}/pull`;
 
   return <div className="status-board" data-testid="pr-status-board">
@@ -72,8 +88,8 @@ export function PRStatusBoard({ query }: { query: string }) {
       </div>
     </div>
 
-    <div className="status-board-counts">
-      {(Object.keys(statusMeta) as StatusKind[]).map((status) => {
+    <div className="status-board-counts" style={{ gridTemplateColumns: `repeat(${visibleStatuses.length}, minmax(120px, 1fr))` }}>
+      {visibleStatuses.map((status) => {
         const meta = statusMeta[status];
         const Icon = meta.icon;
         return <div className={`status-count status-${status}`} key={status}>
@@ -82,26 +98,38 @@ export function PRStatusBoard({ query }: { query: string }) {
       })}
     </div>
 
-    <div className="status-board-plan">
-      {board.mergePlan.map((step) => <div key={step.label}>
-        <span>{step.label}</span>
-        <strong>{step.value}</strong>
-      </div>)}
+    <div className="status-board-plan" aria-label="Recommended merge order">
+      {mergePlan.map((step) => <article className={`status-plan-card merge-lane-${step.tone}`} key={step.order}>
+        <header>
+          <span className="status-plan-order">{step.order}</span>
+          <strong>{step.label}</strong>
+        </header>
+        <div className="status-plan-flow">
+          {step.prs.map((number, index) => <span className="status-plan-node-wrap" key={number}>
+            {index > 0 && <ChevronRight size={12}/>}<a href={`${baseUrl}/${number}`} target="_blank" rel="noreferrer">#{number}</a>
+          </span>)}
+        </div>
+        {step.parallel?.length ? <div className="status-plan-parallel"><span>parallel</span>{step.parallel.map((number) => <a href={`${baseUrl}/${number}`} target="_blank" rel="noreferrer" key={number}>#{number}</a>)}</div> : null}
+        <p>{step.note}</p>
+      </article>)}
     </div>
 
     <div className="status-board-table-wrap">
       <div className="status-board-table-head">
-        <span>PR / Area</span><span>Current decision</span><span>Why</span><span>Next action</span>
+        <span>PR / Merge order</span><span>Current decision</span><span>Why</span><span>Next action</span>
       </div>
       <div className="status-board-rows">
         {visible.map((item) => {
           const meta = statusMeta[item.status];
           const Icon = meta.icon;
-          return <article className="status-board-row" key={item.number}>
+          return <article className={`status-board-row merge-lane-${item.lane}`} key={item.number}>
             <div className="status-pr-cell">
-              <a href={`${baseUrl}/${item.number}`} target="_blank" rel="noreferrer">
-                <strong>#{item.number}</strong><ExternalLink size={10}/>
-              </a>
+              <div className="status-pr-topline">
+                <span className="merge-sequence-chip">{item.sequence}</span>
+                <a href={`${baseUrl}/${item.number}`} target="_blank" rel="noreferrer">
+                  <strong>#{item.number}</strong><ExternalLink size={10}/>
+                </a>
+              </div>
               <span>{item.area}</span>
             </div>
             <div>
