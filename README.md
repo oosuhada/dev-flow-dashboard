@@ -56,6 +56,18 @@ Pull Requests가 기본 진입 화면이며, 새 브라우저에서는 **Open + 
 
 Relations Graph는 별도의 고정 폭 테이블을 만드는 대신 첫 번째 PR 컬럼 안에 graph lane을 overlay합니다. 따라서 List ↔ Graph 전환 중에도 동일한 여섯 컬럼의 정렬과 사용자가 조절한 폭이 유지됩니다.
 
+### Manual PR Status Board
+
+상단의 **PR Status Board**는 실시간 GitHub/Vertex/LLM 판단이 아니라 사람이 직접 확정해서 배포하는 운영 스냅샷입니다.
+
+- source: `frontend/src/pr-status-board.json`
+- `updatedAt` / `asOfLabel`로 기준 시각 명시
+- PR별 `status`, `decision`, `summary`, `action`을 직접 수정
+- merge 순서는 `mergePlan`에서 관리
+- 파일 수정 후 일반 코드와 동일하게 commit/push/deploy하면 화면이 갱신됨
+
+따라서 자동 PM 판단이 변해도 이 보드는 자동으로 바뀌지 않습니다. 팀에서 확인한 상태만 명시적으로 push해 공유할 때 사용합니다.
+
 ## Commit Graph
 
 Commit Graph는 현재 브랜치·태그·commit topology와 commit metadata를 함께 보여줍니다.
