@@ -1,23 +1,13 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T12:34:00+09:00",
-  "asOfLabel": "2026-08-20 12:34 KST 기준",
+  "updatedAt": "2026-08-20T13:37:00+09:00",
+  "asOfLabel": "2026-08-20 13:37 KST 기준",
   "updatedBy": "manual push",
   "headline": "Open PR merge order",
   "note": "Merged PRs are removed as soon as they land. This source-controlled board shows only open work, current blockers, and the recommended merge order; it does not call GitHub, Vertex AI, or an LLM at render time.",
   "mergePlan": [
     {
       "order": 1,
-      "tone": "cicd",
-      "label": "독립 CI/CD",
-      "prs": [
-        93,
-        94
-      ],
-      "note": "#93 먼저 권장. #94는 구현 완료 상태이며 #93과 독립 병합 가능; 동일 HEAD의 추가 review 재실행 실패는 Vertex MAX_TOKENS로 인한 검증 노이즈"
-    },
-    {
-      "order": 2,
       "tone": "project",
       "label": "Project stack",
       "prs": [
@@ -28,7 +18,7 @@
       "note": "#81은 최신 main 재정렬 + 필수 CI green 완료. #81 병합 후 #80을 새 Project ancestry에 맞추고 #84까지 순차 진행"
     },
     {
-      "order": 3,
+      "order": 2,
       "tone": "diagnosis",
       "label": "Diagnosis stack",
       "prs": [
@@ -44,7 +34,7 @@
       "note": "#86은 최신 main 재정렬 + 필수 CI green 완료. #86 병합 후 #47은 병렬, #87→#90은 새 Diagnosis ancestry에 맞춰 순차 진행"
     },
     {
-      "order": 4,
+      "order": 3,
       "tone": "final",
       "label": "Final convergence",
       "prs": [
@@ -53,7 +43,7 @@
       "note": "Domain stack이 main에 들어간 뒤 최신 main rebase + 전체 CI 재검증"
     },
     {
-      "order": 5,
+      "order": 4,
       "tone": "later",
       "label": "후반 재판단",
       "prs": [
@@ -64,30 +54,10 @@
   ],
   "items": [
     {
-      "number": 93,
-      "area": "CI/CD · Mac mini deploy",
-      "status": "ready",
-      "sequence": "1.1",
-      "lane": "cicd",
-      "decision": "최신 HEAD CI 진행 중",
-      "summary": "HEAD f93b614…. pull-based Mac mini release watcher 및 rate-limit fallback 문서까지 추가된 최신 상태. MERGEABLE이고 backend-contract는 PASS, Fast validation / Playwright / Docker는 최신 HEAD에서 현재 실행 중.",
-      "action": "독립 CI/CD PR. 최신 HEAD CI가 모두 green인지 확인한 뒤 병합"
-    },
-    {
-      "number": 94,
-      "area": "CI · AI review routing",
-      "status": "ready",
-      "sequence": "1.2",
-      "lane": "cicd",
-      "decision": "구현 완료 · 병합 가능 · redundant review만 Vertex MAX_TOKENS",
-      "summary": "HEAD 07ffa225…. Vertex 과잉 escalation 완화, Gemma scope-aware falsifier, local Qwen 재시도, stale-HEAD latest-head-wins guard까지 구현 완료. 같은 HEAD의 이전 full review는 PASS 및 Gemini 3.7 Ready to Merge 판정 완료. PR 본문 갱신으로 다시 트리거된 최신 run에서도 backend-contract, Fast validation, aggregate Architecture, Playwright, Docker는 PASS했고 local Qwen 성공 + Gemma falsifier ACCEPT 1.00까지 확인됐으나 최종 Vertex 호출만 MAX_TOKENS로 종료되어 review / review가 실패함. 추가 코드 정교화나 actionable finding은 없음.",
-      "action": "#93과 독립적으로 병합 가능. 순서를 둔다면 #93 다음으로 병합하고, all-green 정책상 필요할 때만 Vertex MAX_TOKENS 재실행/출력 한도 문제를 별도 처리"
-    },
-    {
       "number": 81,
       "area": "Project",
       "status": "ready",
-      "sequence": "2.1",
+      "sequence": "1.1",
       "lane": "project",
       "decision": "최신 main 재정렬 완료 · Ready to merge",
       "summary": "HEAD 88cdbef…. #78 Dataset merge commit 9ef4366 위로 Project 고유 2개 commit 재배치 완료. CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 SUCCESS. 로컬 Project/tenant/Dataset 연계 회귀 27 passed.",
@@ -97,7 +67,7 @@
       "number": 80,
       "area": "Ontology",
       "status": "waiting",
-      "sequence": "2.2",
+      "sequence": "1.2",
       "lane": "project",
       "decision": "#81 다음 · 새 parent 재정렬 필요",
       "summary": "HEAD 8f4ff59…. #81 branch가 88cdbef로 force-rebase되면서 현재 GitHub 기준 DIRTY / CONFLICTING. Ontology 고유 구현의 기존 CI는 PASS였고 신규 기능 blocker는 없음.",
@@ -107,7 +77,7 @@
       "number": 84,
       "area": "Planner",
       "status": "waiting",
-      "sequence": "2.3",
+      "sequence": "1.3",
       "lane": "project",
       "decision": "#80 다음 · 현재 parent 기준 CLEAN",
       "summary": "HEAD ced3026…. #80 base 기준 CLEAN / MERGEABLE이며 필수 CI PASS. Planner 고유 blocker는 없음.",
@@ -117,7 +87,7 @@
       "number": 86,
       "area": "Diagnosis",
       "status": "ready",
-      "sequence": "3.1",
+      "sequence": "2.1",
       "lane": "diagnosis",
       "decision": "최신 main 재정렬 완료 · Ready to merge",
       "summary": "HEAD a78c4ab…. #78 Dataset merge commit 9ef4366 위로 Diagnosis 고유 commit 재배치 완료. Dataset ingestion ownership은 app/dataset에 유지하고 Prediction/runtime/evidence만 app/diagnosis + app/infra/db로 보존. CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 SUCCESS. 핵심 로컬 회귀 26 passed · 5 skipped.",
@@ -127,7 +97,7 @@
       "number": 47,
       "area": "Mac mini 운영",
       "status": "waiting",
-      "sequence": "3.2A",
+      "sequence": "2.2A",
       "lane": "diagnosis",
       "decision": "#86 직후 병렬 · parent ancestry 갱신 필요",
       "summary": "HEAD 67ac8e8…. 기존 #86 기준 검증은 완료됐지만 #86 branch가 a78c4ab로 force-rebase되어 GitHub가 새 parent 관계를 다시 계산 중. 운영 기능 blocker가 새로 발견된 것은 아님.",
@@ -137,7 +107,7 @@
       "number": 87,
       "area": "Maintenance",
       "status": "waiting",
-      "sequence": "3.2",
+      "sequence": "2.2",
       "lane": "diagnosis",
       "decision": "#86 다음 · parent ancestry 갱신 필요",
       "summary": "HEAD 38f558d…. 기존 #86 기준 Maintenance ownership과 필수 CI는 검증 완료. #86 force-rebase 후 새 parent 관계를 다시 맞춰야 함.",
@@ -147,7 +117,7 @@
       "number": 88,
       "area": "Governance",
       "status": "waiting",
-      "sequence": "3.3",
+      "sequence": "2.3",
       "lane": "diagnosis",
       "decision": "#87 다음 · 현재 parent 기준 CLEAN",
       "summary": "HEAD 445228a…. #87 base 기준 CLEAN / MERGEABLE, canonical Governance service/router와 parent wiring 검증 완료.",
@@ -157,7 +127,7 @@
       "number": 89,
       "area": "Dashboard",
       "status": "waiting",
-      "sequence": "3.4",
+      "sequence": "2.4",
       "lane": "diagnosis",
       "decision": "#88 다음 · 현재 parent 기준 CLEAN",
       "summary": "HEAD 7988b3b…. #88 base 기준 CLEAN / MERGEABLE. legacy dashboard service/router 제거와 canonical app/dashboard ownership이 유지되고 최신 필수 CI PASS.",
@@ -167,7 +137,7 @@
       "number": 90,
       "area": "Report",
       "status": "waiting",
-      "sequence": "3.5",
+      "sequence": "2.5",
       "lane": "diagnosis",
       "decision": "#89 다음 · 현재 parent 기준 CLEAN",
       "summary": "HEAD d3d08da…. #89 base 기준 CLEAN / MERGEABLE. canonical app/report 및 report repository ownership을 유지하고 필수 CI PASS.",
@@ -177,7 +147,7 @@
       "number": 92,
       "area": "Final convergence",
       "status": "waiting",
-      "sequence": "4.1",
+      "sequence": "3.1",
       "lane": "final",
       "decision": "Domain stack 뒤 최신 main 재정렬",
       "summary": "HEAD d1bc2fa…. 이전 HEAD에서는 전체 CI가 green이었지만 #78 merge로 main이 전진하면서 현재 DIRTY / CONFLICTING. Final convergence 자체의 과거 CI contract/RLS 문제는 수정된 상태.",
@@ -187,7 +157,7 @@
       "number": 85,
       "area": "CI regression",
       "status": "hold",
-      "sequence": "5.1",
+      "sequence": "4.1",
       "lane": "later",
       "decision": "CLEAN / CI green · 후반 보류",
       "summary": "HEAD d59d41c…. 최신 main 정규화 후 CLEAN / MERGEABLE이며 backend-contract, Fast validation, Architecture, Playwright, Docker 모두 PASS. 관련 로컬 회귀도 11 passed.",
