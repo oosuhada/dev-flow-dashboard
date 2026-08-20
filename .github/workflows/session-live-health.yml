@@ -1,0 +1,27 @@
+name: Session live health probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check public dashboard health
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking public health endpoint"
+          code=$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 15 https://ontology.oosu.dev/dev_dashboard/api/health || true)
+          echo "HTTP=$code"
+          if [ -f /tmp/health.json ]; then
+            head -c 1000 /tmp/health.json
+            echo
+          fi
+          test "$code" = "200"
+          grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/health.json
