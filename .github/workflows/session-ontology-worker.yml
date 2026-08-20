@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   probe:
-    runs-on: [self-hosted, macOS, ARM64, dev-flow-dashboard-v2]
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       - name: Probe ontology checkout and GitHub auth
