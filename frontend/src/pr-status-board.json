@@ -1,9 +1,9 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T17:40:41+09:00",
-  "asOfLabel": "2026-08-20 17:40 KST 기준",
-  "updatedBy": "Final Convergence + #47 absorption refresh",
-  "headline": "지금 확인할 PR은 #92 하나",
+  "updatedAt": "2026-08-20T17:58:00+09:00",
+  "asOfLabel": "2026-08-20 17:58 KST 기준",
+  "updatedBy": "Final review-ready refresh",
+  "headline": "리뷰 요청할 PR은 #92 하나",
   "note": "Backend migration은 #92 하나로 수렴했다. #47 Mac mini 운영/모델 품질 변경도 최신 main 기반 #92에 흡수한 뒤 superseded close했고, #95와 #96은 이미 main에 merge됐다. #84/#85/#87/#88/#89/#90은 독립 merge하지 않는 Draft 참고 PR로만 유지한다.",
   "mergePlan": [
     {
@@ -18,7 +18,7 @@
       "tone": "later",
       "label": "Superseded stack — 독립 merge 금지",
       "prs": [84, 85, 87, 88, 89, 90],
-      "note": "이 PR들은 더 이상 순서대로 rebase/merge하지 않는다. #92 final tree의 구현 누락 검증용으로만 보고, #92 새 HEAD가 green이면 superseded comment 후 close한다."
+      "note": "이 PR들은 더 이상 순서대로 rebase/merge하지 않는다. 현재 모두 Draft 참고용이며, #92가 merge되면 superseded comment 후 close한다."
     }
   ],
   "items": [
@@ -40,7 +40,7 @@
       "lane": "later",
       "decision": "독립 merge/rebase 하지 않음",
       "summary": "HEAD 96b376a…. #80 Ontology가 main에 merge된 뒤 현재 DIRTY. Planner canonical tree는 기존 #92와 동일함을 확인했고 domain regression도 통과했다. ancestry를 고치기 위한 별도 작업은 불필요하다.",
-      "action": "#92 누락 검증용 참고만 유지 → #92 새 HEAD green 후 superseded comment + close"
+      "action": "Draft 참고용으로 유지 → #92 merge 후 superseded comment + close"
     },
     {
       "number": 85,
@@ -50,7 +50,7 @@
       "lane": "later",
       "decision": "final strict architecture에서는 독립 merge 불필요",
       "summary": "HEAD d9fd5a9…. GitHub 기준 CLEAN이지만 migration ledger/map/ratchet은 Final Convergence에서 제거 대상이다. 과거 migration 상태 검사를 되살리지 않고 final architecture에 필요한 assertion만 #92 기준으로 판단한다.",
-      "action": "독립 merge하지 않음. #92 검증 완료 후 필요한 final assertion이 빠졌는지만 확인하고 superseded 처리"
+      "action": "Draft 참고용으로 유지 → #92 merge 후 superseded 처리"
     },
     {
       "number": 87,
@@ -60,7 +60,7 @@
       "lane": "later",
       "decision": "독립 merge/rebase 하지 않음",
       "summary": "HEAD 5f6bf11…. 현재 main 기준 DIRTY. Maintenance final ownership은 #92 tree에 흡수했고 canonical domain regression을 통과해 별도 ancestry 정렬이 필요하지 않다.",
-      "action": "#92 참고 소스로만 유지 → 새 #92 green 후 superseded comment + close"
+      "action": "Draft 참고용으로 유지 → #92 merge 후 superseded comment + close"
     },
     {
       "number": 88,
@@ -70,7 +70,7 @@
       "lane": "later",
       "decision": "독립 merge/rebase 하지 않음",
       "summary": "HEAD 6a39a1b…. stacked base 기준 CLEAN이지만 canonical Governance tree는 기존 #92와 동일함을 확인했다. 독립 merge는 Final Convergence 전략과 충돌한다.",
-      "action": "#92 참고 소스로만 유지 → 새 #92 green 후 superseded comment + close"
+      "action": "Draft 참고용으로 유지 → #92 merge 후 superseded comment + close"
     },
     {
       "number": 89,
@@ -80,7 +80,7 @@
       "lane": "later",
       "decision": "독립 merge/rebase 하지 않음",
       "summary": "HEAD 2a2557a…. stacked base 기준 CLEAN. #92에서는 일부 서비스/projection이 final composition/infra 구조로 더 정리됐고 Dashboard migration regression이 통과해 실제 기능 누락으로 보지 않는다.",
-      "action": "#92 참고 소스로만 유지 → 새 #92 green 후 superseded comment + close"
+      "action": "Draft 참고용으로 유지 → #92 merge 후 superseded comment + close"
     },
     {
       "number": 90,
@@ -90,7 +90,7 @@
       "lane": "later",
       "decision": "독립 merge/rebase 하지 않음",
       "summary": "HEAD 35a143d…. stacked base 기준 CLEAN. Report final tree 차이는 canonical final 구조에서 검증됐고 Report migration regression이 통과했다. 별도 stacked merge는 필요하지 않다.",
-      "action": "#92 참고 소스로만 유지 → 새 #92 green 후 superseded comment + close"
+      "action": "Draft 참고용으로 유지 → #92 merge 후 superseded comment + close"
     }
   ]
 }
