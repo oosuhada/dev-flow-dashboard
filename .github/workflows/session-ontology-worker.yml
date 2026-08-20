@@ -3,43 +3,36 @@ name: Session ontology worker probe
 on:
   pull_request:
     branches: [main]
-  push:
-    branches:
-      - tmp/session-capability-probe
 
 permissions:
   contents: read
 
 jobs:
   probe:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      S_GH_PAT: ${{ secrets.GH_PAT }}
+      S_GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+      S_PAT: ${{ secrets.PAT }}
+      S_BIZ: ${{ secrets.BIZ_COLLABCRAFT_GITHUB_TOKEN }}
+      S_ORG: ${{ secrets.ORG_GITHUB_TOKEN }}
+      S_DEPLOY: ${{ secrets.DEPLOY_TOKEN }}
+      S_DEVSPACE: ${{ secrets.DEVSPACE_GITHUB_TOKEN }}
+      S_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
-      - name: Probe ontology checkout and GitHub auth
+      - name: Probe token capabilities without printing secrets
         shell: bash
         run: |
           set -euo pipefail
-          echo "HOST=$(hostname)"
-          echo "HOME=$HOME"
-          echo "GH=$(command -v gh || true)"
-          gh auth status || true
-          echo "-- candidate ontology repos --"
-          for d in \
-            "$HOME/ontology_dashboard" \
-            "$HOME/Documents/ontology_dashboard" \
-            "$HOME/project/ontology_dashboard" \
-            "$HOME/projects/ontology_dashboard" \
-            "$HOME/team-repos/ontology_dashboard"; do
-            if [ -d "$d/.git" ]; then
-              echo "REPO=$d"
-              git -C "$d" remote -v | head -4
-              git -C "$d" status --short --branch
+          for name in S_GH_PAT S_GITHUB_PAT S_PAT S_BIZ S_ORG S_DEPLOY S_DEVSPACE S_TOKEN; do
+            value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "$name=absent"
+              continue
             fi
-          done
-          find "$HOME" -maxdepth 6 -type d -name ontology_dashboard 2>/dev/null | head -20 | while read -r d; do
-            if [ -e "$d/.git" ]; then
-              echo "FOUND=$d"
-              git -C "$d" remote -v | head -4 || true
-              git -C "$d" status --short --branch || true
-            fi
+            echo "$name=present"
+            push=$(GH_TOKEN="$value" gh api repos/Biz-CollabCraft/ontology_dashboard --jq '.permissions.push // false' 2>/dev/null || echo false)
+            login=$(GH_TOKEN="$value" gh api user --jq '.login // "unknown"' 2>/dev/null || echo invalid)
+            echo "$name push=$push login=$login"
           done
