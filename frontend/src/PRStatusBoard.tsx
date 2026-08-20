@@ -41,7 +41,7 @@ const mergePlan = board.mergePlan as MergePlanStep[];
 const statusMeta: Record<StatusKind, { label: string; icon: typeof CheckCircle2 }> = {
   ready: { label: "Ready", icon: CheckCircle2 },
   progress: { label: "In progress", icon: RefreshCw },
-  review: { label: "Rebase / review", icon: CircleDot },
+  review: { label: "Review pending", icon: CircleDot },
   blocked: { label: "Blocked", icon: XCircle },
   waiting: { label: "Waiting", icon: Clock3 },
   hold: { label: "Hold", icon: PauseCircle },
