@@ -1,152 +1,152 @@
 {
   "repository": "Biz-CollabCraft/ontology_dashboard",
-  "updatedAt": "2026-08-20T10:10:00+09:00",
-  "asOfLabel": "2026-08-20 10:10 KST 기준",
+  "updatedAt": "2026-08-20T10:59:00+09:00",
+  "asOfLabel": "2026-08-20 10:59 KST 기준",
   "updatedBy": "manual push",
   "headline": "Backend migration merge readiness",
   "note": "This board is a manually maintained snapshot. It does not call GitHub, Vertex AI, or any LLM to generate status. Edit this file and push to update the deployed board.",
   "mergePlan": [
     {
-      "label": "Independent / first",
-      "value": "#70 · #77 · #78 · #79"
+      "label": "Merged",
+      "value": "#77 Equipment · #79 Identity"
     },
     {
-      "label": "Identity → Planner stack",
-      "value": "#79 → #81 → #80 → #84"
+      "label": "Next independent",
+      "value": "#78 Dataset conflict 정리 · #81 Project conflict 정리"
+    },
+    {
+      "label": "Project → Planner stack",
+      "value": "#81 → #80 → #84"
     },
     {
       "label": "Diagnosis → Report stack",
-      "value": "#86 수정 → #87 수정 → #88 → #89 → #90"
+      "value": "#86 정규화 → #87 → #88 → #89 → #90"
     },
     {
       "label": "Finalization",
-      "value": "#85 후반 재판단 → #92 final convergence"
-    },
-    {
-      "label": "Operations",
-      "value": "#47 별도 운영 검증"
+      "value": "#85 후반 재판단 → #92 final convergence · #47 별도 운영 검증"
     }
   ],
   "items": [
     {
       "number": 77,
       "area": "Equipment",
-      "status": "ready",
-      "decision": "병합 가능",
-      "summary": "최신 smmini가 현재 HEAD e3c63bb…에 현재 단계에서 병합 가능 판정. backend-contract / Fast validation / Architecture / Playwright / Docker 모두 PASS. Vercel만 무료 배포 한도 실패.",
-      "action": "최종 merge 진행 가능"
+      "status": "merged",
+      "decision": "병합 완료",
+      "summary": "2026-08-20 10:27 KST main 병합 완료. 기존 smmini 병합 가능 판정과 필수 Backend CI PASS 상태로 반영됨.",
+      "action": "완료 · 후속 PR은 최신 main의 Equipment 계약을 authoritative source로 사용"
+    },
+    {
+      "number": 79,
+      "area": "Identity",
+      "status": "merged",
+      "decision": "병합 완료",
+      "summary": "2026-08-20 10:34 KST main 병합 완료. Identity IAM / Principal / Workspace 공개 계약이 main의 기준점이 됨.",
+      "action": "완료 · #81 및 후속 stack은 최신 main Identity 계약 기준으로 정규화"
     },
     {
       "number": 78,
       "area": "Dataset",
       "status": "review",
-      "decision": "수정 완료 · 최종 재리뷰 권장",
-      "summary": "smmini의 Dataset router ownership 지적 이후 app/dataset/dataset_router.py로 실제 이관 완료. 새 HEAD 1da806e…, mergeState=CLEAN, CI/Vercel 전부 PASS. 사람 리뷰는 수정 전 HEAD 기준.",
-      "action": "최신 HEAD 최종 재확인 요청"
-    },
-    {
-      "number": 79,
-      "area": "Identity",
-      "status": "ready",
-      "decision": "병합 가능",
-      "summary": "최신 smmini가 현재 HEAD 1bfa2e3…에 현재 단계에서 병합 가능 판정. Backend CI 전부 PASS. Vercel rate-limit만 외부 실패.",
-      "action": "#81보다 먼저 merge"
+      "decision": "수정 완료 · conflict 해결 후 병합 가능",
+      "summary": "HEAD 1da806e…. Dataset router ownership 보완은 최신 smmini가 확인 완료. 필수 CI/Vercel 전부 PASS였으나 #77/#79 main 병합 후 mergeState=DIRTY / CONFLICTING으로 변경됨.",
+      "action": "최신 main의 Equipment/Identity wiring을 보존해 conflict 해결 → migration baseline 재산출 → 재검증"
     },
     {
       "number": 81,
       "area": "Project",
-      "status": "waiting",
-      "decision": "#79 후 병합 가능",
-      "summary": "최신 smmini가 현재 HEAD d8112be…에 #79 병합 후 병합 가능 판정. 자체 blocker 없음.",
-      "action": "#79 → #81 순서 유지"
+      "status": "review",
+      "decision": "Project 구현 완료 · 최신 main conflict 정리 필요",
+      "summary": "HEAD d8112be…. 최신 smmini는 Project 고유 변경을 #54 범위에 부합한다고 재확인. #79가 main에 병합되면서 현재 DIRTY / CONFLICTING이며 기존 필수 Backend CI는 PASS.",
+      "action": "병합된 #79 Identity를 authoritative source로 유지해 최신 main 위로 Project 변경 재조정 후 병합"
     },
     {
       "number": 80,
       "area": "Ontology",
-      "status": "review",
-      "decision": "#81 후 · 최종 재리뷰 권장",
-      "summary": "리뷰 이후 legacy postgresql_ontology_repository.py까지 canonical app/infra/db로 추가 이관. 새 HEAD e521901…, CLEAN, CI/Vercel 전부 PASS. 사람 리뷰는 이전 HEAD 기준.",
-      "action": "#81 이후 최신 HEAD 최종 재리뷰 요청"
+      "status": "waiting",
+      "decision": "#81 병합 후 정규화 · 재리뷰",
+      "summary": "HEAD e521901…, 현재 #81 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel PASS. legacy PostgreSQL Ontology repository 추가 이관까지 최신 smmini가 확인했으며 Ontology 고유 blocker는 없음.",
+      "action": "#81 최신 main 정리·병합 → #80 Ontology 고유 commit을 최신 main에 재배치 → 재리뷰"
     },
     {
       "number": 84,
       "area": "Planner",
       "status": "waiting",
-      "decision": "#80 후 · 최종 재리뷰 권장",
-      "summary": "새 #80 위로 rebase 완료. 새 HEAD 6dc539c…, CLEAN, CI/Vercel 전부 PASS. Planner 자체 추가 blocker 없음.",
-      "action": "#79 → #81 → #80 → #84"
+      "decision": "#80 후 정규화 · 재리뷰",
+      "summary": "HEAD 6dc539c…, 현재 #80 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel PASS. Ontology-owned query contract를 소비만 하도록 정리됐고 Planner 고유 blocker는 없음.",
+      "action": "#81 → #80 병합 후 Planner 고유 변경만 최신 main 위로 재배치"
     },
     {
       "number": 85,
       "area": "CI regression",
       "status": "hold",
-      "decision": "후반 보류",
-      "summary": "smmini 최신 판정이 현재 Domain 이식 PR보다 먼저 병합할 필요 없음. 코드 변경 없이 유지. Backend CI PASS, Vercel 무료 한도 실패.",
-      "action": "Domain migration 종료 후 다시 판단"
+      "decision": "후반 보류 · 현재 conflict",
+      "summary": "HEAD 165d654…. smmini 권고대로 Domain migration보다 먼저 병합할 필요가 없어 보류 중. 기존 Backend CI PASS, Vercel quota 실패. main 전진으로 현재 DIRTY / CONFLICTING.",
+      "action": "Domain/Composition 수렴 후 최신 main rebase 및 #66 final strict gate와 중복 여부 재판단"
     },
     {
       "number": 86,
       "area": "Diagnosis",
-      "status": "blocked",
-      "decision": "수정 필요 — 현재 핵심 blocker",
-      "summary": "최신 smmini가 현재 HEAD bbda35a…에 Router ownership 보완 후 병합 가능 판정. Diagnosis runtime 핵심은 이식됐지만 predictive_maintenance_runtime HTTP transport ownership이 legacy에 남아 있음. CI 자체는 PASS이지만 코드 ownership 미완료.",
-      "action": "Diagnosis router ownership canonical 이관"
+      "status": "review",
+      "decision": "Router 수정 완료 · 최신 main 정규화 필요",
+      "summary": "새 HEAD b798480…. predictive-maintenance runtime endpoint를 app/diagnosis/diagnosis_router.py로 실제 이동하고 legacy router를 제거함. 최신 smmini가 #58 작업 틀 충족을 확인했고 backend-contract / Fast validation / Architecture / Playwright / Docker / Vercel 전부 PASS. #79 병합 직후 현재 DIRTY / CONFLICTING.",
+      "action": "최신 main의 Equipment/Identity 계약을 보존하고 Diagnosis 고유 commit만 남도록 ancestry/conflict 정리 → 재리뷰 후 병합"
     },
     {
       "number": 87,
       "area": "Maintenance",
       "status": "review",
-      "decision": "수정 완료 · #86 후 재정렬/재리뷰",
-      "summary": "이전 blocker 해소. Maintenance-owned Decision/Note/Activity endpoint를 canonical router로 이동하고 maintenance_service.py, maintenance_router.py, maintenance_exception.py 추가. 새 HEAD 3de7c72…, CLEAN, CI/Vercel 전부 PASS, 로컬 70 passed.",
-      "action": "Base #86 수정 후 ancestry 재정렬 및 최종 재리뷰"
+      "decision": "Maintenance blocker 해소 · #86 후 재배치",
+      "summary": "HEAD 3de7c72…. Maintenance service/router/exception 추가와 Decision/Note/Activity endpoint canonical 이관 완료. 최신 smmini가 이전 application/transport blocker 해소를 확인. 기존 전체 CI/Vercel PASS였으나 새 #86 ancestry와 main 전진으로 현재 DIRTY / CONFLICTING.",
+      "action": "#86 정규화·병합 후 Maintenance 고유 변경을 최신 main 위로 재배치하고 재리뷰"
     },
     {
       "number": 88,
       "area": "Governance",
-      "status": "review",
-      "decision": "#87 후 병합 가능 · 재리뷰 권장",
-      "summary": "#87 새 HEAD 위로 rebase 완료. Governance 의미 변경 없음. 새 HEAD 66cb74d…, CLEAN, CI/Vercel 전부 PASS. 사람 리뷰는 이전 #87 ancestry 기준.",
-      "action": "#87 최종 정리 후 최신 ancestry 기준 재리뷰"
+      "status": "waiting",
+      "decision": "자체 blocker 없음 · #86/#87 대기",
+      "summary": "HEAD 66cb74d…, 현재 #87 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel PASS. 최신 smmini는 Governance 고유 구현에 추가 blocker가 없다고 확인.",
+      "action": "#86 → #87 순차 병합 후 Governance 고유 commit을 최신 main으로 재배치·재리뷰"
     },
     {
       "number": 89,
       "area": "Dashboard",
-      "status": "review",
-      "decision": "선행 stack 후 병합 가능",
-      "summary": "새 #88 위로 rebase 완료. 새 HEAD 90319ab…, CLEAN, backend-contract / Fast validation / Playwright / Docker / Architecture / Vercel 전부 PASS. Dashboard 자체 추가 blocker 없음.",
-      "action": "#86 → #87 → #88 선행 stack 완료 후 병합"
+      "status": "waiting",
+      "decision": "자체 blocker 없음 · 선행 stack 대기",
+      "summary": "HEAD 90319ab…, 현재 #88 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel 전부 PASS. 최신 smmini가 Dashboard application/read-model composition 이식을 확인했으며 추가 blocker 없음.",
+      "action": "#86 → #87 → #88 병합 후 Dashboard 고유 변경을 최신 main에 재배치·재리뷰"
     },
     {
       "number": 90,
       "area": "Report",
-      "status": "review",
-      "decision": "선행 stack 후 병합 가능",
-      "summary": "새 #89 위로 rebase 완료. 새 HEAD eec361b…, CLEAN, 전체 CI/Vercel PASS. legacy reports.py, llm.py, export source 4종 부재까지 재검증 완료. Report 자체 blocker 없음.",
-      "action": "#86 → #87 → #88 → #89 → #90 순서"
+      "status": "waiting",
+      "decision": "자체 blocker 없음 · 선행 stack 대기",
+      "summary": "HEAD eec361b…, 현재 #89 base 기준 CLEAN / MERGEABLE, 필수 CI/Vercel 전부 PASS. legacy reports.py / llm.py / Export source 제거와 Report/Export ownership을 최신 smmini가 확인.",
+      "action": "#86 → #87 → #88 → #89 병합 후 Report 고유 변경을 최신 main에 재배치·재리뷰"
     },
     {
       "number": 70,
       "area": "Playwright entrypoint",
       "status": "ready",
       "decision": "기술적으로 병합 가능",
-      "summary": "HEAD 83301a7… 그대로. canonical app.main:app E2E 전환 및 architecture guard 완료. Backend/E2E CI 전부 PASS, Vercel만 무료 quota 실패.",
-      "action": "#92/#64와 같은 final entrypoint 영역이므로 merge할지 #92에 흡수할지 결정"
+      "summary": "현재 HEAD 83301a7…, MERGEABLE / UNSTABLE. canonical app.main:app E2E/architecture/backend-contract는 PASS하고 유일한 실패 신호는 Vercel 무료 quota. 최신 사람 검토에서 코드 blocker 없음.",
+      "action": "#92가 동일 final entrypoint 영역을 포함하므로 독립 merge할지 #92에 흡수할지 결정"
     },
     {
       "number": 47,
       "area": "Mac mini 운영",
       "status": "verified",
-      "decision": "기술 검증 완료 · #86 종속",
-      "summary": "HEAD 902e361…, mergeState=CLEAN, Architecture/Fast validation/Playwright/Docker/backend-contract/Vercel 전부 PASS. canonical live ingestor 전환도 완료.",
-      "action": "Base #86 변경 시 재정렬"
+      "decision": "기술 검증 완료 · #86 재정렬 필요",
+      "summary": "HEAD 902e361…, 기존 Architecture/Fast validation/Playwright/Docker/backend-contract/Vercel 모두 PASS이며 canonical live ingestor 전환도 검증 완료. base가 #86이라 #86 변경 및 main 전진 후 현재 DIRTY / CONFLICTING.",
+      "action": "#86 병합 후 운영 변경을 새 ancestry에 재정렬; 운영검증 PR로 별도 유지 가능"
     },
     {
       "number": 92,
       "area": "Final convergence",
-      "status": "blocked",
-      "decision": "Draft 유지 + CI 수정 필요",
-      "summary": "HEAD 6003bef…, Draft. #64/#65/#66을 한 PR로 끝내는 최종 convergence PR이며 부모 migration PR 선병합 전제. 현재 실패 체크는 Fast validation, backend-contract, architecture 3개.",
-      "action": "부모 PR 병합 후 최신 main rebase → strict architecture pytest 설치 순서 및 PdM v3.1 row-count fixture/expected mismatch 수정"
+      "status": "review",
+      "decision": "Draft 유지 · CI 수정 push됨 · 최신 main 재검증 필요",
+      "summary": "HEAD가 6003bef…에서 b711e77…로 갱신됨. preflight 정렬, final convergence CI contract 수정, check 안정화, PostgreSQL RLS auth test 수정 커밋이 추가됨. 현재 Draft이며 #77/#79 병합 후 DIRTY / CONFLICTING. 최신 HEAD에는 Vercel 성공만 있고 GitHub Actions 전체 검증 결과는 아직 없음.",
+      "action": "부모 Domain PR을 순차 병합 → 최신 main으로 final convergence 재정렬 → backend-contract/Fast validation/Architecture/Playwright/Docker 전체 CI 재실행 확인"
     }
   ]
 }

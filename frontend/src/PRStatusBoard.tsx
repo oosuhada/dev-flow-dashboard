@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import board from "./pr-status-board.json";
 
-type StatusKind = "ready" | "review" | "blocked" | "waiting" | "hold" | "verified";
+type StatusKind = "merged" | "ready" | "review" | "blocked" | "waiting" | "hold" | "verified";
 
 type BoardItem = {
   number: number;
@@ -24,6 +24,7 @@ type BoardItem = {
 const items = board.items as BoardItem[];
 
 const statusMeta: Record<StatusKind, { label: string; icon: typeof CheckCircle2 }> = {
+  merged: { label: "Merged", icon: GitMerge },
   ready: { label: "Ready", icon: CheckCircle2 },
   review: { label: "Re-review", icon: CircleDot },
   blocked: { label: "Blocked", icon: XCircle },
@@ -53,7 +54,7 @@ export function PRStatusBoard({ query }: { query: string }) {
   const counts = items.reduce<Record<StatusKind, number>>((acc, item) => {
     acc[item.status] += 1;
     return acc;
-  }, { ready: 0, review: 0, blocked: 0, waiting: 0, hold: 0, verified: 0 });
+  }, { merged: 0, ready: 0, review: 0, blocked: 0, waiting: 0, hold: 0, verified: 0 });
   const baseUrl = `https://github.com/${board.repository}/pull`;
 
   return <div className="status-board" data-testid="pr-status-board">
