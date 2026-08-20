@@ -199,6 +199,18 @@ The deterministic Git/GitHub layer is authoritative for topology, lifecycle, rev
 
 서비스는 loopback에만 bind되고 public ingress는 tunnel이 담당합니다.
 
+### Automatic deploy from `main`
+
+The Mac mini is registered as a repository-scoped GitHub Actions self-hosted
+runner with the `dev-flow-dashboard` label. Every push to `main` runs
+`.github/workflows/deploy-macmini.yml`: it validates/builds the frontend,
+syncs tracked source into `~/services/dev-flow-dashboard` while preserving
+`.env`, `.state`, and `.venv`, restarts `com.oosu.dev-flow-dashboard`, and
+requires the local health endpoint to return `status: ok`.
+
+The deploy logic lives in `scripts/deploy-macmini.sh` so the same deployment
+can also be run manually on the Mac mini when needed.
+
 ### GitHub App authentication
 
 개인 PAT quota와 대시보드 quota를 분리하려면 read-only GitHub App을 두 저장소에 설치하고 다음 값을 설정합니다. App 설정이 완전하면 `GITHUB_TOKEN`보다 installation token을 우선 사용하며 만료 전에 자동 갱신합니다.
