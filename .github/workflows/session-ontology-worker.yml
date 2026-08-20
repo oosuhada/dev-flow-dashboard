@@ -1,6 +1,8 @@
 name: Session ontology worker probe
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches:
       - tmp/session-capability-probe
